@@ -1,0 +1,327 @@
+Daylight — Master Design Specification
+Working specification · Version 1.1 · November 6, 2026
+Status: Product requirements and proposed workflows—not a claim that these features are implemented or verified.
+Core promise: Daylight should make work easier to manage, not create more work to manage the system. Enter commitments once, budget time yourself, schedule manually, record outcomes with minimal effort, and let AI evaluate pacing and recommend what matters next.
+How to read this document
+Decided means established in design planning.
+Proposed means a recommended implementation detail that can still be changed.
+Open means not yet made a decision. Do not treat it as an instruction for Codex to invent the answer.
+The experience in 30 seconds
+Set up when needed: Add a deadline, create a task, define a project, or edit a recurring routine. You should not have to visit every setup area every morning.
+Review priorities: AI reads existing records and shows a few recommended tasks with a brief explanation of why they matter.
+Schedule manually: Fixed routines are already on the calendar. Drag chosen tasks into available time blocks.
+Mark outcomes: As sessions finish, record a simple status directly from their calendar blocks.
+Review once daily: Daylight gathers the evidence, asks only essential short questions, and produces one AI progress and pacing assessment that informs the next day.
+
+1. Core mission and division of responsibility
+Build a visually clean, space-efficient personal productivity system for deadlines, routines, ordinary tasks, and long-term projects.
+Decided principles:
+Human owns the time budget: The user estimates workload, chooses priorities, and decides exactly when to schedule work. The system may flag implausible estimates, but it must not silently replace them with AI guesses.
+AI owns progress interpretation: AI evaluates meaningful accomplishments, focus (as reported), obstacles, available future time, and the likelihood of meeting milestone and final deadlines.
+AI advises; human schedules: AI does not build or impose a minute-by-minute daily schedule.
+Minimal inputs, maximum analysis: Prefer existing data over re-asking; use brief selections, numbers, and one-sentence answers instead of repeated forms or conversations.
+Purpose before features: Avoid dashboards, rules, notifications, and menus that add cognitive load without making planning or execution easier.
+The most important AI capabilities are project decomposition, deadline pacing, identifying neglected or blocked work, explaining risks, and recommending actionable next steps.
+2. Product areas and navigation
+Decided: Separate setup spaces are useful because a computer screen cannot show everything clearly. Do not force all functionality onto one enormous page. At the same time, the user must not complete a multi-page setup ritual every morning.
+The conceptual areas are:
+Area
+Purpose
+Expected frequency
+Routines
+Define repeating activities with specific days, start times, and durations
+Configure occasionally
+Deadlines
+Add and manage dates, assignments, tests, final deliverables, and approved milestones
+As new obligations arise
+Tasks & Projects
+Add actionable work, budget time, link tasks to deadlines, and manage project plans
+As new work arises
+Daily Priorities
+See AI's short explanation and compact group of recommended work
+Daily
+Calendar / Planner
+See routines and commitments; manually place tasks in time slots; mark session outcomes
+Daily
+Progress
+Review the day's records and receive one AI assessment
+Once daily, when useful
+
+These are functional areas, not a final count of top-level navigation tabs. Some may be subviews, modals, or closely linked screens.
+UI requirements (decided):
+Prioritize efficient use of screen space. Use compact cards, two-column or multi-column arrangements where useful, and expandable detail panels.
+Do not display the entire backlog as one enormous scrolling list.
+Show the highest-priority recommendations first, with the rest of the task bank available on demand.
+Calendar task blocks should expose a compact completion/status control rather than opening an obligatory separate form.
+Make adding an ordinary task or deadline a quick action from wherever the user is working.
+Preserve useful Google Calendar views, including Day, Week, Month, and the previously requested 12-month year-at-a-glance view.
+Open: Whether Daily Priorities and Calendar are separate navigable views or panes within one workspace. The user's stated preference is to have enough separation to avoid a crowded screen, with an effortless transition from recommendations to drag-and-drop scheduling.
+3. Routines and recurring commitments
+Decided: Routine creation includes a time, duration, and repeat days. The chosen routine appears automatically as a scheduled calendar block on those days. It is not merely an optional daily AI suggestion.
+Example: Cardio · Monday, Wednesday, Thursday · 6:30–7:00 PM. Those blocks appear on the calendar, and planning must take them into account.
+Other examples: a nightly routine, language practice, gym, band rehearsal, or a fixed hobby period.
+Routines should be easy to edit, pause, or discontinue.
+Routines and other fixed commitments reduce the free time available for AI pacing assessments.
+The user works around routine blocks when scheduling ordinary tasks.
+The calendar should remain authoritative for actual dates and time commitments.
+Routine completion can normally use a single toggle/status, not a detailed progress questionnaire.
+Open: Default handling of one-off exceptions (skip this occurrence, move only today, edit the entire series), conflicts with external Google Calendar events, and whether an optional non-time-specific habit category is ever needed. Do not add flexible routines by default; fixed-time routines are the agreed model.
+4. Deadlines, tasks, sessions, and projects are different things
+This distinction is foundational, even when the records appear together in the interface.
+Record
+Meaning
+Deadline
+The date/time by which something must be completed; may exist before its tasks are known
+Task
+Work that needs doing; may be linked to a deadline or project, or may stand alone
+Scheduled session
+One calendar block allocated to working on a task; several sessions can belong to one task
+Routine
+A recurring calendar commitment with fixed days and times
+Project
+A larger outcome composed of milestones and actionable tasks
+Milestone
+A verifiable intermediate project deliverable with an approved target date
+Review record
+User-confirmed evidence of the outcome of a particular session or day
+
+Deadline-first and task-first entry
+Decided: Deadlines and tasks remain separate but linkable. Either can be created first.
+New deadline: enter title + due date. Tasks can be attached now or created later, manually or through AI decomposition. Can be linked to Project
+New ordinary task: enter task name + user's rough time estimate and optionally link it to an existing deadline or project. Additional notes, importance, and division into sessions should not be mandatory.
+A task can exist without any deadline.
+Deadline markers should be visible in calendar views without pretending that they are scheduled work sessions.
+Time estimates: The user, not AI, is responsible for the initial estimate. Rough estimates are acceptable. Proposed usability detail: Allow an Unknown / estimate later draft state for quick capture, but mark it as missing information; ask the user to enter an estimate before Daylight makes a time-budget-sensitive pacing recommendation. Never present AI-inferred hours as user-provided facts.
+Scheduling and completing sessions
+Decided behavioral model:
+Users drag a task into a calendar slot and can adjust the time allocated to that session.
+A task may have one or multiple independent scheduled sessions. Completing one session must not automatically complete the entire task or its other sessions.
+One-time unscheduled tasks should leave the unscheduled task bank when first scheduled, while remaining discoverable in their active task/project record if work remains.
+Repeatable templates, if supported, remain reusable. A completed routine occurrence does not end the whole routine.
+A completed task stops appearing in tomorrow's active work and recommendations, but its completion records remain in history.
+Unfinished work should not silently generate a new calendar booking tomorrow; AI can recommend that the user schedule it.
+When a parent task is finished, its related pending sessions/deadline should be marked resolved or flagged for review as appropriate; unrelated events must never be deleted. Open: Exact handling of Google Calendar deadline markers when work is completed early.
+5. Simple project creation and AI milestone proposals
+Projects need more structure than ordinary tasks, but setup must remain manageable.
+Initial information, supplied by the user
+Minimum proposed project setup:
+Outcome: What is the finished deliverable?
+Final deadline: When must it be finished?
+Starting point: What has already been completed? (Short sentence or selection.)
+Time budget: Rough total effort or realistic available hours, if known; distinguish these two inputs.
+Optional details: Major requirements, intermediate deadlines already imposed externally, essential dependencies, known risks, and a short description or uploaded reference. Do not require the user to fill out an elaborate project questionnaire.
+How AI generates mini-deadlines
+Decided approach; proposed mechanics:
+AI identifies the major concrete deliverables required for the final outcome.
+It identifies the dependency order, including tasks that cannot begin before others finish.
+It compares user-supplied effort estimates with real calendar capacity, including fixed routines, commitments, other urgent deadlines, and planned sessions.
+It plans backward from the final due date, proposing target dates for deliverables and signaling when assumptions or capacity are insufficient.
+The user reviews and approves milestone names and dates before they become commitments.
+AI expands only the current or next milestone into actionable tasks and sub-deadlines; it does not create a huge list of speculative tasks months in advance.
+When evidence shows a milestone is slipping, AI explains the cause and proposes a revision. It never silently changes an approved deadline or calendar commitment.
+For uncertain creative work, AI should distinguish facts, estimates, and assumptions. If it cannot estimate an engineering task credibly, it should ask a short clarifying question or mark the plan as provisional rather than inventing precision.
+Example: A robotics project due December 15 might have approved milestones for schematic, PCB layout, assembly, integration testing, and final verification. Actual dates are generated only after checking dependencies, effort estimates, and available time. These example milestones are not universal templates.
+6. AI information pipeline: what it reads and where it comes from
+Daylight's AI should consume structured evidence, not a fresh free-form conversation every day.
+Information
+Source
+Used for
+Dates, events, existing commitments, routine blocks
+Connected Google Calendar and Daylight calendar records
+Available capacity, deadline urgency, conflicts
+Deadline titles, due dates, task links
+Daylight database
+Identifying obligations and consequences
+Task names, user effort estimates, statuses, links
+Daylight database
+Workload and remaining-work assessment
+Project outcomes, milestone dates, dependencies, approvals
+Daylight database
+Comparing real progress against planned deliverables
+Scheduled sessions and user-confirmed outcomes
+Daylight records and calendar links
+Planned vs. confirmed execution
+Focus rating, blockage, accomplishments, hours remaining
+Quick user responses, when requested
+Diagnosing delays and interpreting progress
+Earlier reviews, decisions, and accepted plan changes
+Historical Daylight database records
+Continuity without repeatedly asking for context
+
+Critical distinction: A scheduled or elapsed calendar block is not proof that work happened. A user-confirmed outcome provides stronger evidence. Planned duration is not automatically actual focused duration. If actual time or substantive progress is unknown, the AI must say so.
+The Google Calendar connection is for dates and time events; the Daylight database stores task/project meaning, session status, approval history, and progress evidence. Their relationship must be explicit so synchronization does not erase those distinctions.
+External Gemini reflection: The existing three-question Future Self check-in is currently used separately in Gemini. Do not require a migration of this routine into Daylight for V1. Daylight cannot assume it can automatically read Gemini chats. Future import or synchronization would require a separately designed, user-authorized integration.
+7. What happens during a workday
+Before work: daily recommendations
+AI reads the latest known data, including yesterday's confirmed execution, upcoming deadlines and milestones, the user's remaining effort estimates, and future availability.
+Consider more than just today: a fully booked tomorrow may make work urgent today, even if the due date is later.
+Proposed default: Look approximately seven days ahead, emphasizing the next two to three days. Make this tunable later rather than a complicated initial setting.
+Present recommended task cards, arranged compactly, each with a short reason.
+Keep the full backlog accessible but secondary.
+The user chooses whether and when to schedule each task.
+A short AI explanation might say: “Physics is due Friday, tomorrow evening is mostly booked, and the PCB milestone is slipping. Use today's available time for physics first, then a focused PCB session.” This is an example, not a mandatory generated schedule.
+During work: quick session statuses
+When a scheduled session finishes, allow an inline calendar control:
+Completed / Partial (low → high) / Blocked / Skipped
+Keep this to one action where possible.
+For simple routines or straightforward tasks, no additional questions are normally needed.
+For partial or blocked work, an optional one-line note can be entered immediately or collected during the daily review.
+The session status and the parent task's completion status are not the same field.
+The user can correct an accidentally recorded status.
+At day's end: one consolidated review
+Decided: AI provides one daily progress/pacing assessment, not a lengthy evaluation after every work session.
+Daylight aggregates that day's confirmed sessions and milestone outcomes.
+It identifies only the missing facts material to the assessment.
+It asks a few very brief questions, if necessary.
+It produces a concise report covering time use, self-reported focus, meaningful progress, milestone pacing, obstacles, and the highest-priority next action.
+The reviewed information is saved so tomorrow's recommendations build on actual history.
+This is a work-execution report, not a replacement for the separate Gemini Future Self check-in.
+8. Question and answer design: minimal cognitive load
+Decided: AI questions should be fragments or very short sentences, usually answered with a dropdown, one number, or one short sentence. Provide an optional field for more context. Never demand a paragraph.
+Examples of concise questions:
+Short question
+Answer type
+Example answer
+Milestone done?
+Yes / No / Partial
+Partial
+Hours left?
+Number
+3
+Focus?
+Dropdown
+Mixed
+Main blocker?
+Open-ended
+Technical issue
+What changed?
+One short sentence
+Finished schematic; layout remains
+Worked as planned?
+Yes / No / Partly
+Partly
+
+Question-selection rules:
+Do not ask what is already recorded, such as the task title or the deadline.
+Only ask if the answer could change the assessment or next recommendation.
+Favor questions specific to an at-risk project; avoid generic daily questionnaires.
+Allow skipping a question and mark the corresponding judgment as uncertain.
+Use consistent wording and answer categories for comparable records.
+Avoid asking for a numerical progress percentage unless the user has an actual defensible way to measure that percentage.
+9. AI pacing, focus, and time-efficiency assessment
+The daily evaluation should distinguish three different signals rather than collapsing them into one arbitrary productivity score.
+Signal
+Evidence
+What AI can reasonably conclude
+Deadline pacing
+Approved milestone dates, deliverables finished, credible remaining work, calendar capacity
+On track / needs attention / at risk / blocked / insufficient information
+Time use and efficiency
+User estimate, confirmed work time (if known), concrete output, delays
+Whether execution appears to match expectations and where estimates need review
+Focus
+User's brief focus response and any relevant obstacle note
+Self-reported concentration, not an objective measurement of attention
+
+Example: a milestone needs eight more hours of work before Friday, but the calendar has only three realistically free hours. Daylight can flag a capacity shortfall without inventing a productivity score. If the remaining-hours estimate is missing or uncertain, it should explicitly qualify that warning.
+If two focused hours did not finish a planned PCB deliverable, AI must not automatically label the session inefficient. It might be legitimate technical difficulty. It can ask “Main blocker?” before making a recommendation.
+Health categories
+On track: Evidence supports meeting the approved milestone.
+Needs attention: Progress is slower than expected or available time is shrinking.
+At risk: The current plan is unlikely to meet an upcoming approved deadline without a change.
+Blocked: A specific obstacle is preventing advancement.
+Insufficient information: A credible judgment cannot be made from existing evidence.
+Every nontrivial assessment should include a brief evidence-based reason and, if possible, one actionable recommendation. The AI must not invent actual hours worked, quality ratings, completion percentages, or project certainty.
+V1 boundary: AI may propose changes, but it does not silently reschedule work, rewrite approved milestone dates, adjust habit requirements, or create opaque behavioral optimization rules.
+10. Repeatability, calculations, and AI implementation contract
+Goal: Comparable and auditable assessments over time, not a false promise of identical prose on every run.
+Required design approach:
+Structured input snapshot: Supply the AI with the same named fields each time: current date, deadlines, project plans, approved milestones, user estimates, available time, confirmed session outcomes, blockers, prior review summary, and any explicitly missing values.
+Deterministic calculations: Ordinary software calculates dates, scheduled/free calendar time, sum of planned sessions, and confirmed completion counts. Do not delegate arithmetic or database joins to a language model.
+Versioned instructions: Store a stable, versioned evaluation prompt and rubric that clearly distinguishes observations, assumptions, risks, and recommendations.
+Fixed response structure: Save a short report with fields such as pacing_status, time_use_observation, focus_observation, evidence, missing_information, next_action, and questions_if_needed.
+Source distinction: Label facts from the database separately from user self-reports and AI interpretations. Do not present an AI inference as a measured fact.
+Approval control: Proposed changes to milestones, deadlines, or calendar events are drafts until the user explicitly accepts them.
+Audit trail: Preserve the input snapshot (or reproducible reference to it), relevant rule/prompt version, resulting assessment, and user-approved changes.
+Safe uncertainty: When records are insufficient or a synchronization error occurs, display the limitation and request the smallest missing input needed. Never generate confident-looking assessments from stale data.
+Using stable inputs and rubrics improves consistency; changing model behavior or phrasing can still produce variations. Tests should verify the same underlying calculations and decision criteria, not require word-for-word identical AI paragraphs.
+Conceptual AI run cycle
+Calendar + task/project database + confirmed outcomes → deterministic preparation and capacity calculations → select essential questions (if any) → short user answers → versioned AI assessment → saved report + proposed recommendations → user-approved changes only.
+11. Reports and analytics
+Decided: There should be a brief daily AI progress report. It should help the next day rather than creating a new administration ritual.
+Proposed daily output:
+One short assessment of time use and self-reported focus.
+A small set of project pacing flags, with reasons.
+One or a few prioritized next actions.
+Optional details hidden behind an expansion control.
+Weekly reporting: Retain the idea of a concise periodic summary of milestones, upcoming work, recurring bottlenecks, and routine consistency, but do not make the user browse complex charts.
+Open: Whether weekly reports are automatic or on demand; which metrics actually help. Store trustworthy raw data for later analysis, but defer elaborate analytics dashboards and unsupported numerical productivity scores.
+12. Future Self reflection and accountability boundary
+The user already has an established three-question Future Self reflection and quizzes using Google Gemini, and does not currently want to be forced into a new format.
+Decided for now:
+Keep the existing Gemini reflection external and unchanged.
+Do not require the Daylight user to repeat the same behavioral or mindset questions.
+Daylight's review concerns observable execution, time budgeting, obstacles, and project pacing.
+A possible future connection between reflection and Daylight is open, not a V1 dependency.
+Do not confuse a daily progress report with a personal mindset reflection. The former is part of Daylight's core workflow; the latter can continue in Gemini independently.
+13. Operating cycle and acceptance examples
+Setup (only when something changes)
+Create or edit a time-fixed routine; enter a new deadline; create a task with an approximate user-estimated workload; or set up a project and approve its milestones. No daily requirement to revisit all setup screens.
+Daily planning
+Daylight reads upcoming commitments and the latest progress evidence.
+AI presents a compact set of prioritized tasks with a brief rationale.
+The user opens the calendar, sees routines already scheduled, and drags chosen tasks into available blocks.
+Calendar changes synchronize through the intended Google Calendar integration.
+Execution and daily assessment
+The user marks each completed/partial/blocked/skipped session inline.
+In one end-of-day review, AI uses those records and asks only necessary short questions.
+Daylight stores the report and uses it for the next day's recommendations.
+Essential acceptance examples
+A. Fixed routine: Create 30-minute cardio for Monday, Wednesday, and Thursday at 6:30 PM. Matching calendar blocks appear on those weekdays, and the AI recognizes that this time is already committed. Daylight should use Google Calendar's recurring events feature, not create thousands of separate Google Tasks.
+B. Linked deadline and tasks: Create a physics deadline due Friday. Later add a 90-minute physics task linked to it. The deadline remains a date marker; scheduled study blocks are separate calendar events.
+C. Multi-session work: Schedule the physics task for 45 minutes Tuesday and 45 minutes Wednesday. Mark Tuesday Partial; Wednesday must not automatically be marked complete. Completing the underlying task resolves active work while preserving history.
+D. Progress-based warning: An approved project milestone is Friday; user-confirmed work leaves more estimated hours than free calendar capacity. The report flags a pacing risk and explains the time shortfall without claiming to know work quality.
+E. Incomplete evidence: A two-hour calendar block passes, but the user has not recorded an outcome. AI must not classify it as two hours of productive work.
+F. Short question: An at-risk project lacks information about the blocker. AI asks “Main blocker?” with options; it does not require a paragraph before showing the daily assessment.
+14. Existing rules: retain, simplify, or retire
+The earlier scheduling system included limits on daily must-dos, mandatory work-block lengths, automatic task insertion, switching rules, energy protocols, frequent breaks, commute rituals, and other detailed restrictions.
+These should not be silently imported into Daylight's planner. Keep only rules that demonstrably help. Where useful, represent them as configurable routines or occasional advice rather than mandatory schedule constraints. The system must not grow into another rulebook.
+15. Technical direction and implementation boundaries
+The following decisions come from the broader Daylight development discussion, not from evidence that the existing implementation works:
+Application: Portable Next.js / React / TypeScript source code; independently hostable.
+Persistent records: Supabase for Daylight-owned data such as tasks, projects, approvals, and review history.
+Calendar synchronization: Real Google Calendar API integration, with a clear distinction between Google events and Daylight-specific task/session records.
+Deployment: Vercel is the intended eventual host; do not deploy yet.
+Preservation: Do not erase existing project data, working connections, or .env.local while making changes.
+Verification: Treat source-implemented, fixture-tested, and live-verified integrations as different statuses. A visually working placeholder must not be reported as actual synchronization or working AI.
+Open technical details: Authentication and permissions, safe storage and migration strategies, synchronization conflict/recurrence behavior, failure handling, exact database schema, whether any AI provider is already live, and when background processing runs. These require implementation audits rather than speculation.
+16. Decisions that remain open
+Screen arrangement: Separate Daily Priorities and Calendar views, or one workspace with an easy view switch? Favor uncluttered screens and quick movement between the two.
+Recommendation horizon: Seven-day proposed default and two-to-three-day emphasis are not yet approved as exact parameters.
+Project initial workload: What happens when user effort or capacity is genuinely unknown? How little can AI ask while still making a credible plan?
+Milestone estimation: How should user effort estimates be allocated across deliverables, and when should AI request a correction?
+Daily questions: Exact option labels, whether to cap questions at two or three, and whether any answers are essential versus optional.
+Actual time: Will the user adjust elapsed time manually, or will the system record only scheduled vs. confirmed sessions unless more detail is supplied?
+Deadline completion: Whether an early-finished deadline marker is hidden, flagged as completed, or preserved unchanged in Google Calendar.
+Routine exceptions: How to modify one occurrence without changing the series.
+Weekly reports: Frequency, trigger, and minimal useful metrics.
+AI implementation: Exact prompt, output schema, model/provider, evaluation criteria, and test cases must be specified and verified before claiming reproducibility.
+Google Calendar reliability: Account/calendar selection, two-way sync scope, conflicts, failures, and duplicate prevention.
+Rule for unresolved items: Preserve the current working behavior where possible, mark the product decision as open, and do not let implementation convenience decide the product direction without review.
+
+Confirmed changes since Version 1.0
+Routines are fixed-day, fixed-time calendar blocks, not just recommendation templates.
+Deadlines and tasks are distinct records with optional links, and either can be created first.
+The user estimates work duration; AI assesses whether progress and capacity support the deadline.
+Scheduling a task creates independent sessions; one session's completion does not complete all remaining sessions.
+Use separate setup spaces without requiring a multi-page daily onboarding ritual.
+Make the interface compact and space-efficient, with a visible priority subset and an accessible, secondary backlog.
+AI evaluates progress once per day using brief user-confirmed outcomes, instead of interrogating the user after each session.
+AI asks short, targeted, standardized questions with optional one-sentence context only when needed.
+Milestones are concrete deliverables proposed through a backward, capacity-aware plan and approved by the user.
+AI explicitly distinguishes focus, time use, and deadline pacing, and never equates scheduled hours with demonstrated accomplishments.
+Reproducibility is supported by structured inputs, deterministic calculations, stable prompts, versioned rubrics, and saved evidence, not by assuming identical AI wording.
+Handwriting-to-text and elaborate behavioral automation are outside this revision's core workflow; they must not be silently made mandatory.
+Definition of success: Open Daylight, see what matters, fit work around fixed commitments, mark results with minimal effort, and receive trustworthy feedback about whether limited time is moving important projects toward real deadlines.
+
+
