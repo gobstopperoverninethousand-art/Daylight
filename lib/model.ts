@@ -30,16 +30,24 @@ export const taskSchema = z.object({
   projectId: id.nullable(),
   milestoneId: id.nullable(),
   importance: z.enum(["normal", "high"]),
+  includeDate: daySchema.nullable().optional(),
+  aiTodoDate: daySchema.optional(),
+  generatedForProjectId: id.optional(),
+  deletedProject: z.string().optional(),
   status: z.enum(["active", "completed"]),
   notes: note,
   createdAt: z.string(),
   completedAt: z.string().nullable(),
 });
 export const deadlineSchema = z.object({
+  deletedProject: z.string().optional(),
+  historicalKind: z.enum(["milestone", "project"]).optional(),
   id,
   title,
   date: daySchema,
   time: timeSchema.nullable(),
+  workMode: z.enum(["single", "multiple"]).optional(),
+  remainingMinutes: minutes.nullable().optional(),
   projectId: id.nullable(),
   status: z.enum(["active", "resolved"]),
   notes: note,
@@ -53,6 +61,7 @@ export const sessionSchema = z
     duration: minutes.max(1440),
     outcome: outcomeSchema,
     actualMinutes: z.number().int().min(0).max(1440).nullable(),
+    focus: z.enum(["Focused", "Mixed", "Distracted"]).optional(),
     note,
     needsReview: z.boolean(),
   })
@@ -144,7 +153,22 @@ export const linkSchema = z.object({
   etag: z.string(),
   fingerprint: z.string(),
   calendarId: z.string(),
+  deletedInGoogle: z.boolean().optional(),
+  googleOverride: z.boolean().optional(),
+  googleOccurrenceDates: z.array(daySchema).optional(),
 });
+// A remote cancellation removes the calendar copy while retaining Daylight records.
+export function googleOverrides(s: State): Set<string> {
+  return new Set(
+    s.links
+      .filter(
+        (link) =>
+          link.calendarId === s.settings.calendarId &&
+          (link.deletedInGoogle || link.googleOverride),
+      )
+      .map((link) => link.key),
+  );
+}
 export const settingsSchema = z
   .object({
     name: z.string().max(80),
@@ -185,6 +209,10 @@ export const assessmentSchema = z.object({
   next_action: z.string().max(1500),
   questions_if_needed: z.array(z.string().max(300)).max(3),
 });
+export const commitmentUpdateSchema = z.object({
+  key: z.string().max(180),
+  note: z.string().trim().min(1).max(600),
+});
 export const reviewSchema = z.object({
   id,
   date: daySchema,
@@ -195,6 +223,8 @@ export const reviewSchema = z.object({
   focus: z.string().max(80),
   blocker: note,
   accomplishment: note,
+  commitmentKey: z.string().max(180).optional(),
+  commitmentUpdates: z.array(commitmentUpdateSchema).optional(),
   assessment: assessmentSchema,
   snapshot: z.record(z.string(), z.unknown()),
 });
@@ -340,6 +370,58 @@ export function finishTask(state: State, id: string, done = true): void {
     id,
   );
 }
+export function removeProject(state: State, projectId: string, today: string, minute: number) {
+  const project = state.projects.find((entry) => entry.id === projectId);
+  if (!project) return false;
+
+  const linkedDeadlines = new Set(state.deadlines.filter((entry) => entry.projectId === projectId).map((entry) => entry.id));
+  const removedDeadlines = new Set(state.deadlines.filter((entry) => linkedDeadlines.has(entry.id) && entry.date >= today).map((entry) => entry.id));
+  state.deadlines = state.deadlines.filter((entry) => !removedDeadlines.has(entry.id));
+  for (const deadline of state.deadlines) {
+    if (!linkedDeadlines.has(deadline.id)) continue;
+    deadline.projectId = null;
+    deadline.deletedProject = project.title;
+    deadline.status = "resolved";
+  }
+  const historicalMarkers = [
+    ...project.milestones.filter((entry) => entry.approved).map((entry) => ({ ...entry, historicalKind: "milestone" as const })),
+    { id: project.id, title: project.title, date: project.deadline, reason: "", historicalKind: "project" as const },
+  ];
+  for (const marker of historicalMarkers) {
+    if (marker.date >= today) continue;
+    state.deadlines.push({
+      id: marker.id, title: marker.title, date: marker.date, time: null,
+      status: "resolved", projectId: null, notes: marker.reason,
+      deletedProject: project.title, historicalKind: marker.historicalKind,
+    });
+  }
+
+  const milestoneIds = new Set(project.milestones.map((milestone) => milestone.id));
+  const linkedTasks = new Set(state.tasks.filter((task) =>
+    task.projectId === projectId ||
+    (!task.projectId && task.generatedForProjectId === projectId) ||
+    (task.milestoneId && milestoneIds.has(task.milestoneId)) ||
+    (task.deadlineId && linkedDeadlines.has(task.deadlineId)),
+  ).map((task) => task.id));
+  state.sessions = state.sessions.filter((session) =>
+    !linkedTasks.has(session.taskId) ||
+    session.date < today ||
+    (session.date === today && clockMinutes(session.start) < minute),
+  );
+  const historicalTasks = new Set(state.sessions.map((session) => session.taskId));
+  state.tasks = state.tasks.filter((task) => !linkedTasks.has(task.id) || historicalTasks.has(task.id));
+  for (const task of state.tasks) {
+    if (task.deadlineId && removedDeadlines.has(task.deadlineId)) task.deadlineId = null;
+    if (!linkedTasks.has(task.id)) continue;
+    task.projectId = null;
+    task.milestoneId = null;
+    task.deletedProject = project.title;
+    delete task.aiTodoDate;
+  }
+  state.projects = state.projects.filter((entry) => entry.id !== projectId);
+  return true;
+}
+
 export function removeTask(state: State, id: string): boolean {
   const exists = state.tasks.some((task) => task.id === id);
   if (!exists) return false;

@@ -30,17 +30,21 @@ export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
     await limited(user.id, "ai-project-tasks", 12);
-    const { state, projectId } = z
-      .object({ state: stateSchema, projectId: z.string() })
+    const { state, projectId, milestoneId } = z
+      .object({
+        state: stateSchema,
+        projectId: z.string(),
+        milestoneId: z.string(),
+      })
       .parse(await readBody(req));
     validateReferences(state);
     const project = state.projects.find(
       (p) => p.id === projectId && p.status === "active",
     );
     if (!project) throw new HttpError("Active project not found.", 404);
-    const milestone = project.milestones
-      .filter((m) => m.approved && !m.completed)
-      .sort((a, b) => a.date.localeCompare(b.date))[0];
+    const milestone = project.milestones.find(
+      (m) => m.id === milestoneId && m.approved && !m.completed,
+    );
     if (!milestone)
       throw new HttpError(
         "Approve a current milestone before expanding it into tasks.",

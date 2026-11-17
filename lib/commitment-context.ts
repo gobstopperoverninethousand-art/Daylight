@@ -1,0 +1,98 @@
+import { deadlineEntries } from "./deadlines";
+import { addDays, type State } from "./model";
+
+export function commitmentHistory(state: State) {
+  const entries = deadlineEntries(state).filter((entry) => !entry.resolved);
+  const taskById = new Map(state.tasks.map((task) => [task.id, task]));
+  return entries.map((entry) => {
+    const key = entry.kind + ":" + entry.id;
+    const related = new Set([key]);
+    if (entry.kind === "project") {
+      for (const deadline of state.deadlines.filter(
+        (item) => item.projectId === entry.id,
+      ))
+        related.add("deadline:" + deadline.id);
+      for (const milestone of state.projects.find(
+        (item) => item.id === entry.id,
+      )?.milestones ?? [])
+        related.add("milestone:" + milestone.id);
+    }
+    const updates = state.reviews.flatMap((review) =>
+      review.commitmentUpdates
+        ? review.commitmentUpdates
+            .filter((update) => related.has(update.key))
+            .map((update) => ({
+              date: review.date,
+              commitment: update.key,
+              note: update.note,
+            }))
+        : review.commitmentKey && related.has(review.commitmentKey)
+          ? [{
+              date: review.date,
+              commitment: review.commitmentKey,
+              focus: review.focus,
+              note: typeof review.snapshot.confirmed_interpretation === "string"
+                ? review.snapshot.confirmed_interpretation
+                : review.accomplishment,
+              blocker: review.blocker,
+              follow_up: review.snapshot.follow_up,
+            }]
+          : [],
+    );
+    const sessions = state.sessions.filter((session) => {
+      const task = taskById.get(session.taskId);
+      if (
+        !task ||
+        (session.outcome === "pending" &&
+          !session.note &&
+          !session.focus &&
+          session.actualMinutes === null)
+      )
+        return false;
+      if (entry.kind === "deadline") return task.deadlineId === entry.id;
+      if (entry.kind === "milestone") return task.milestoneId === entry.id;
+      return (
+        task.projectId === entry.id ||
+        state.deadlines.some(
+          (deadline) =>
+            deadline.id === task.deadlineId && deadline.projectId === entry.id,
+        )
+      );
+    });
+    return {
+      key,
+      updates,
+      recorded_session_count: sessions.length,
+      completed_session_count: sessions.filter(
+        (session) => session.outcome === "completed",
+      ).length,
+      recent_sessions: sessions
+        .sort(
+          (a, b) =>
+            b.date.localeCompare(a.date) || b.start.localeCompare(a.start),
+        )
+        .map(({ date, outcome, actualMinutes, note, focus }) => ({
+          date,
+          outcome,
+          actualMinutes,
+          focus,
+          note,
+        })),
+    };
+  });
+}
+
+export function expireGeneratedTodos(
+  state: State,
+  day: string,
+  minute: number,
+) {
+  const booked = new Set(state.sessions.map((session) => session.taskId));
+  const expired = state.tasks.filter(({ id, aiTodoDate, status }) => {
+    if (!aiTodoDate || booked.has(id) || status !== "active") return false;
+    const expirationDay = addDays(aiTodoDate, 1);
+    return day > expirationDay || (day === expirationDay && minute >= 540);
+  });
+  const ids = new Set(expired.map((task) => task.id));
+  return state.tasks.filter((task) => !ids.has(task.id));
+}

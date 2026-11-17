@@ -58,6 +58,7 @@ export type GoogleEvent = {
   extendedProperties?: { private?: Record<string, string> };
   updated?: string;
   recurringEventId?: string;
+  originalStartTime?: GoogleEvent["start"];
   htmlLink?: string;
 };
 export type GooglePerson = {
@@ -83,7 +84,10 @@ function normalizedRecurrence(lines: string[]) {
       const head = line.slice(0, split).toUpperCase();
       const value = line.slice(split + 1).toUpperCase();
       if (head.startsWith("RRULE")) {
-        const parts = value.split(";").map((part) => {
+        const fields = value.split(";");
+        if (!fields.some((field) => field.startsWith("INTERVAL=")))
+          fields.push("INTERVAL=1");
+        const parts = fields.map((part) => {
           const [key, raw] = part.split("=", 2);
           if (key === "BYDAY")
             return [
@@ -112,7 +116,8 @@ function normalizedRecurrence(lines: string[]) {
         const values = value.split(",");
         if (head.includes("VALUE=DATE"))
           return "EXDATE;VALUE=DATE:" + values.sort().join(",");
-        const timezone = head.match(/TZID=([^;]+)/)?.[1] || "UTC";
+        const timezone =
+          line.slice(0, split).match(/TZID=([^;]+)/i)?.[1] || "UTC";
         const instants = values.map((compact) => {
           const match = compact.match(/^(\d{8})T(\d{6})(Z)?$/);
           if (!match) return compact;
@@ -204,7 +209,11 @@ export function outboundEvents(
   }
   for (const r of s.routines) {
     let first = r.since;
-    for (let i = 0; i < 7 && !r.days.includes(weekday(first)); i++)
+    for (
+      let i = 0;
+      r.recurrenceUnit !== "days" && i < 7 && !r.days.includes(weekday(first));
+      i++
+    )
       first = addDays(first, 1);
     const pauseDay =
       s.audit
@@ -214,21 +223,23 @@ export function outboundEvents(
     const until = r.paused ? addDays(pauseDay, -1) : r.until;
     const exceptions = s.exceptions.filter((x) => x.routineId === r.id);
     const recurrence = [
-      `RRULE:FREQ=${r.recurrenceUnit === "months" ? "MONTHLY" : r.recurrenceUnit === "days" ? "DAILY" : "WEEKLY"};INTERVAL=${r.recurrenceInterval || 1}${r.recurrenceUnit === "days" ? "" : ";BYDAY=" + r.days.map((d) => ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][d]).join(",")}${until ? ";UNTIL=" + (r.untimed ? until.replace(/-/g, "") : localInstant(until, "23:59", zone).replace(/[-:]/g, "").replace(".000", "")) : ""}`,
+      `RRULE:FREQ=${r.recurrenceUnit === "months" ? "MONTHLY" : r.recurrenceUnit === "days" ? "DAILY" : "WEEKLY"};INTERVAL=${r.recurrenceInterval || 1}${r.recurrenceUnit === "days" ? "" : ";WKST=SU;BYDAY=" + r.days.map((d) => ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][d]).join(",")}${until ? ";UNTIL=" + (r.untimed ? until.replace(/-/g, "") : localInstant(until, "23:59", zone).replace(/[-:]/g, "").replace(".000", "")) : ""}`,
     ];
     if (until && until < first) continue;
-    for (const ex of exceptions)
+    for (const ex of exceptions) {
+      // EXDATE is the occurrence's wall time in TZID, not a UTC time without Z.
       recurrence.push(
         r.untimed
           ? "EXDATE;VALUE=DATE:" + ex.date.replace(/-/g, "")
           : "EXDATE;TZID=" +
               zone +
               ":" +
-              localInstant(ex.date, r.start, zone)
-                .replace(/[-:]/g, "")
-                .replace(".000", "")
-                .replace(/Z$/, ""),
+              ex.date.replace(/-/g, "") +
+              "T" +
+              r.start.replace(":", "") +
+              "00",
       );
+    }
     out.push({
       key: "routine:" + r.id,
       event: {
@@ -260,7 +271,7 @@ export function outboundEvents(
   }
   for (const d of s.deadlines)
     out.push({
-      key: "deadline:" + d.id,
+      key: (d.historicalKind ?? "deadline") + ":" + d.id,
       event: {
         summary: (d.status === "resolved" ? "✓ " : "Due · ") + d.title,
         description: `Daylight deadline marker, not a work session.${d.time ? " Due at " + d.time + " (" + zone + ")." : ""}`,

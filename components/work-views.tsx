@@ -29,10 +29,10 @@ import {
   finishTask,
   hoursLabel,
 } from "@/lib/model";
-import { projectHealth, taskDue } from "@/lib/engine";
-import { projectDraftKey } from "@/lib/ai-freshness";
+import { projectHealth, scheduledTaskIds, taskDue } from "@/lib/engine";
+
 import { EditorState } from "./editor";
-import { Badge, Empty, IconButton, SectionHead, DAYS } from "./ui";
+import { Field, Badge, Empty, IconButton, SectionHead, DAYS } from "./ui";
 import { deadlineEntries } from "@/lib/deadlines";
 import { MilestoneFlow } from "./milestone-flow";
 export type ViewProps = {
@@ -45,13 +45,14 @@ export function Tasks({ state, update, edit, notify }: ViewProps) {
   const [filter, setFilter] = useState("active"),
     [query, setQuery] = useState(""),
     [page, setPage] = useState(0);
+  const scheduled = scheduledTaskIds(state);
   const tasks = state.tasks.filter(
     (t) =>
+      !t.deletedProject &&
       (filter === "all" || filter === "completed"
         ? filter === "all" || t.status === "completed"
         : t.status === "active") &&
-      (filter !== "unscheduled" ||
-        !state.sessions.some((s) => s.taskId === t.id)) &&
+      (filter !== "unscheduled" || !scheduled.has(t.id)) &&
       (filter !== "missing" || t.estimate === null) &&
       t.title.toLowerCase().includes(query.toLowerCase()),
   );
@@ -560,12 +561,44 @@ export function Projects({
   edit: ViewProps["edit"];
   notify: ViewProps["notify"];
   propose: (id: string) => void;
-  proposeTasks: (id: string) => void;
+  proposeTasks: (id: string, milestoneId: string) => void;
   busy: boolean;
   aiReady: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [archived, setArchived] = useState(false);
+  const visibleProjects = state.projects.filter((p) => (p.status === "completed") === archived);
+  const [taskMilestone, setTaskMilestone] = useState("");
   const project = state.projects.find((p) => p.id === selected);
+  const latestMilestoneProposal = state.aiRuns.findLast(
+    (run) =>
+      run.kind === "milestones" &&
+      (run.snapshot.project as { id?: string } | undefined)?.id === project?.id,
+  );
+  const selectedTaskMilestone = project?.milestones.find(
+    (m) => m.id === taskMilestone && m.approved && !m.completed,
+  );
+  const currentTasks = state.tasks.filter(
+    (task) => task.projectId === project?.id && task.status === "active",
+  );
+  const currentWorkGroups = project
+    ? [
+        ...[...project.milestones]
+          .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))
+          .map((milestone) => ({
+            id: milestone.id,
+            title: milestone.title,
+            tasks: currentTasks.filter((task) => task.milestoneId === milestone.id),
+          })),
+        {
+          id: "unassigned",
+          title: "No milestone",
+          tasks: currentTasks.filter(
+            (task) => !project.milestones.some((milestone) => milestone.id === task.milestoneId),
+          ),
+        },
+      ].filter((group) => group.tasks.length > 0)
+    : [];
   return (
     <>
       <PageHeading
@@ -583,6 +616,18 @@ export function Projects({
         }
         label={project ? "Edit project" : "New project"}
       />
+      <div className="tab-row" aria-label="Project lists">
+        {([false, true] as const).map((value) => (
+          <button
+            key={String(value)}
+            className={value === archived ? "active" : ""}
+            aria-pressed={value === archived}
+            onClick={() => { setArchived(value); setSelected(null); }}
+          >
+            {value ? "Archived projects" : "Active projects"}
+          </button>
+        ))}
+      </div>
       {project ? (
         <>
           <button
@@ -783,23 +828,9 @@ export function Projects({
                   Ask AI for a small set of milestone proposals based on your
                   outcome, estimates, and calendar capacity.
                 </p>
-                {(["milestones", "tasks"] as const).map((kind) => {
-                  const draft = state.aiRuns.findLast(
-                    (run) =>
-                      run.kind === kind &&
-                      (run.snapshot.project as { id?: string } | undefined)
-                        ?.id === project.id,
-                  );
-                  return draft &&
-                    draft.inputKey !==
-                      projectDraftKey(state, project.id, kind) ? (
-                    <p key={kind} className="form-hint">
-                      <Badge tone="peach">Needs refresh</Badge>{" "}
-                      {kind === "milestones" ? "Milestone" : "Task"} proposal
-                      inputs changed.
-                    </p>
-                  ) : null;
-                })}
+                {typeof latestMilestoneProposal?.output.summary === "string" && (
+                  <p>{latestMilestoneProposal.output.summary}</p>
+                )}
                 <button
                   className="button secondary"
                   disabled={busy || !aiReady}
@@ -809,15 +840,23 @@ export function Projects({
                     ? "Considering your plan…"
                     : "Propose milestones with AI"}
                 </button>
+                <Field label="Milestone for task suggestions">
+                  <select value={selectedTaskMilestone?.id ?? ""} onChange={(event) => setTaskMilestone(event.target.value)}>
+                    <option value="">Select a milestone</option>
+                    {project.milestones.filter((m) => m.approved && !m.completed).map((m) => (
+                      <option key={m.id} value={m.id}>{m.title}</option>
+                    ))}
+                  </select>
+                </Field>
                 <button
                   className="button secondary"
                   style={{ marginTop: 10 }}
                   disabled={
                     busy ||
                     !aiReady ||
-                    !project.milestones.some((m) => m.approved && !m.completed)
+                    !selectedTaskMilestone
                   }
-                  onClick={() => proposeTasks(project.id)}
+                  onClick={() => selectedTaskMilestone && proposeTasks(project.id, selectedTaskMilestone.id)}
                 >
                   Suggest next tasks with AI
                 </button>
@@ -833,23 +872,22 @@ export function Projects({
                   action={() => edit({ kind: "task", projectId: project.id })}
                   label="Add"
                 />
-                {state.tasks
-                  .filter(
-                    (t) => t.projectId === project.id && t.status === "active",
-                  )
-                  .map((t) => (
-                    <button
-                      className="project-task"
-                      key={t.id}
-                      onClick={() => edit({ kind: "task", id: t.id })}
-                    >
-                      {t.title}
-                      <ChevronRight size={14} />
-                    </button>
-                  ))}
-                {!state.tasks.some(
-                  (t) => t.projectId === project.id && t.status === "active",
-                ) && (
+                {currentWorkGroups.map((group) => (
+                  <section className="project-work-group" key={group.id}>
+                    <h4>{group.title}</h4>
+                    {group.tasks.map((task) => (
+                      <button
+                        className="project-task"
+                        key={task.id}
+                        onClick={() => edit({ kind: "task", id: task.id })}
+                      >
+                        {task.title}
+                        <ChevronRight size={14} />
+                      </button>
+                    ))}
+                  </section>
+                ))}
+                {!currentTasks.length && (
                   <p>
                     No active tasks. Expand your current milestone when you’re
                     ready.
@@ -871,9 +909,9 @@ export function Projects({
                       project.id,
                     );
                   });
-                  notify(
-                    "Project status updated. Linked tasks and sessions remain independent.",
-                  );
+                  setArchived(project.status === "active");
+                  setSelected(null);
+                  notify(project.status === "active" ? "Project archived." : "Project reopened.");
                 }}
               >
                 {project.status === "active"
@@ -883,9 +921,9 @@ export function Projects({
             </aside>
           </div>
         </>
-      ) : state.projects.length ? (
+      ) : visibleProjects.length ? (
         <div className="project-grid">
-          {state.projects.map((p) => {
+          {visibleProjects.map((p) => {
             const health = projectHealth(state, p),
               done = p.milestones.filter((m) => m.completed).length;
             return (
@@ -956,6 +994,8 @@ export function Projects({
             );
           })}
         </div>
+      ) : archived ? (
+        <p>No archived projects yet.</p>
       ) : (
         <Empty
           title="Give your next idea a home."

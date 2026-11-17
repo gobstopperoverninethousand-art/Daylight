@@ -3,15 +3,13 @@ import { State, projectPlanningData } from "./model";
 import { zonedParts } from "./engine";
 
 export const priorityResultSchema = z.object({
-  summary: z.string().max(1200),
-  recommendations: z
-    .array(
-      z.object({
-        taskId: z.string(),
-        reason: z.string().max(600),
-      }),
-    )
-    .max(3),
+  summary: z.string().max(12000),
+  recommendations: z.array(
+    z.object({
+      taskId: z.string(),
+      reason: z.string().max(600),
+    }),
+  ),
 });
 
 export function workspaceDay(state: State) {
@@ -50,6 +48,9 @@ export function evidenceKey(
     today,
     selfReport,
     priorReview?.id,
+    state.reviews
+      .filter((review) => review.commitmentKey)
+      .map((review) => review.id),
     state.tasks,
     state.deadlines,
     state.projects.map(projectPlanningData),

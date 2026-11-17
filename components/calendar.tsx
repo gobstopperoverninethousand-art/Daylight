@@ -21,6 +21,7 @@ import {
   displayTime,
   durationLabel,
   Outcome,
+  googleOverrides,
 } from "@/lib/model";
 import {
   blocksForDay,
@@ -225,6 +226,7 @@ export function Planner({
   );
   const today = zonedNow.day;
   const scheduled = scheduledTaskIds(state);
+  const overridden = googleOverrides(state);
   const recommended = recommendations(state, date);
   const unscheduled = recommended.filter(({ task }) => !scheduled.has(task.id));
   const allScheduled = recommended.length > 0 && unscheduled.length === 0;
@@ -258,15 +260,17 @@ export function Planner({
               ? [{ task, reason: r.reason, due: null, score: 0 }]
               : [];
           })
-        : unscheduled.slice(0, 3)
+        : []
       : bank === "active"
         ? recommended
         : unscheduled;
   const tasks =
     bank === "recommended"
       ? [
-          ...returned,
-          ...suggested.filter(({ task }) => !returnedIds.has(task.id)),
+          ...suggested,
+          ...returned.filter(
+            ({ task }) => !suggested.some((item) => item.task.id === task.id),
+          ),
         ]
       : suggested;
   const yearly = view === "Year" || view === "Year Columns";
@@ -616,7 +620,7 @@ export function Planner({
                   ? "Sign in under Settings to get an AI explanation for today’s to-do list."
                   : aiReady
                     ? "Refresh the AI to-do list to see how today’s tasks were chosen."
-                    : "Local task suggestions are available while Gemini is disconnected.")}
+                    : "Connect Gemini in Settings to refresh the AI to-do list.")}
             </p>
             {aiPriorities?.stale && (
               <span className="form-hint" role="status">
@@ -626,9 +630,8 @@ export function Planner({
           </div>
           <button
             className="button secondary small"
-            disabled={!aiReady || aiBusy || unscheduled.length === 0}
+            disabled={!aiReady || aiBusy}
             onClick={() => {
-              setBank("recommended");
               requestPriorities();
             }}
           >
@@ -709,9 +712,7 @@ export function Planner({
             </div>
             {tasks.length ? (
               <div className="todo-list">
-                {tasks
-                  .slice(0, bank === "recommended" ? 3 : 30)
-                  .map(({ task, reason }) => (
+                {tasks.map(({ task, reason }) => (
                     <TaskCard
                       key={task.id}
                       task={task}
@@ -846,7 +847,12 @@ export function Planner({
                       }}
                     >
                       {state.deadlines
-                        .filter((x) => x.date === d && x.status === "active")
+                        .filter(
+                          (x) =>
+                            x.date === d &&
+                            (x.status === "active" || !!x.deletedProject) &&
+                            !overridden.has((x.historicalKind ?? "deadline") + ":" + x.id),
+                        )
                         .map((x) => (
                           <button
                             className="deadline-chip"
@@ -854,13 +860,17 @@ export function Planner({
                             onClick={() => edit({ kind: "deadline", id: x.id })}
                           >
                             <span />
-                            Due · {x.title}
+                            {x.historicalKind === "milestone" ? "Milestone" : "Due"} · {x.title}
                           </button>
                         ))}
                       {state.projects.flatMap((p) =>
                         p.milestones
                           .filter(
-                            (m) => m.approved && !m.completed && m.date === d,
+                            (m) =>
+                              m.approved &&
+                              !m.completed &&
+                              m.date === d &&
+                              !overridden.has("milestone:" + m.id),
                           )
                           .map((m) => (
                             <button
@@ -880,7 +890,10 @@ export function Planner({
                       )}
                       {state.projects
                         .filter(
-                          (p) => p.status === "active" && p.deadline === d,
+                          (p) =>
+                            p.status === "active" &&
+                            p.deadline === d &&
+                            !overridden.has("project:" + p.id),
                         )
                         .map((p) => (
                           <button
@@ -1310,16 +1323,30 @@ export function Planner({
   );
 }
 function markersForDay(state: State, date: string) {
+  const overridden = googleOverrides(state);
   return [
     ...state.deadlines
-      .filter((d) => d.status === "active" && d.date === date)
+      .filter(
+        (d) =>
+          (d.status === "active" || !!d.deletedProject) &&
+          d.date === date &&
+          !overridden.has((d.historicalKind ?? "deadline") + ":" + d.id),
+      )
       .map((d) => ({ id: d.id, title: d.title })),
     ...state.projects
       .filter((p) => p.status === "active")
       .flatMap((p) => [
-        ...(p.deadline === date ? [{ id: p.id, title: p.title }] : []),
+        ...(p.deadline === date && !overridden.has("project:" + p.id)
+          ? [{ id: p.id, title: p.title }]
+          : []),
         ...p.milestones
-          .filter((m) => m.approved && !m.completed && m.date === date)
+          .filter(
+            (m) =>
+              m.approved &&
+              !m.completed &&
+              m.date === date &&
+              !overridden.has("milestone:" + m.id),
+          )
           .map((m) => ({ id: m.id, title: m.title })),
       ]),
   ];

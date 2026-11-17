@@ -30,6 +30,10 @@ import {
   eventFingerprint,
   localInstant,
 } from "../lib/google-plan";
+import {
+  expireGeneratedTodos,
+  commitmentHistory,
+} from "../lib/commitment-context";
 const day = "2026-11-09",
   now = new Date("2026-11-09T13:00:00Z");
 function state(): State {
@@ -648,4 +652,60 @@ test("sessions cannot spill into the next day without a separate booking", () =>
   s.tasks.push(task());
   s.sessions.push(session("a", { start: "23:30", duration: 60 }));
   assert.equal(stateSchema.safeParse(s).success, false);
+});
+
+test("generated to-dos expire at 9 a.m. the next day while booked and manual tasks persist", () => {
+  const s = state();
+  s.tasks.push(
+    task("temporary", { aiTodoDate: day }),
+    task("booked", { aiTodoDate: day }),
+    task("manual"),
+  );
+  s.sessions.push({
+    id: "booking",
+    taskId: "booked",
+    date: addDays(day, 2),
+    start: "10:00",
+    duration: 30,
+    outcome: "pending",
+    actualMinutes: null,
+    note: "",
+    needsReview: false,
+  });
+  assert.equal(expireGeneratedTodos(s, addDays(day, 1), 539).length, 3);
+  assert.deepEqual(
+    expireGeneratedTodos(s, addDays(day, 1), 540).map((t) => t.id),
+    ["booked", "manual"],
+  );
+});
+
+test("commitment evidence follows linked sessions and excludes unrelated work", () => {
+  const s = state();
+  s.deadlines.push({
+    id: "essay",
+    title: "Essay",
+    date: day,
+    time: null,
+    projectId: null,
+    status: "active",
+    notes: "",
+  });
+  s.tasks.push(task("linked", { deadlineId: "essay" }), task("unrelated"));
+  for (const taskId of ["linked", "unrelated"])
+    s.sessions.push({
+      id: taskId,
+      taskId,
+      date: day,
+      start: "10:00",
+      duration: 30,
+      outcome: "completed",
+      actualMinutes: 15,
+      focus: "Focused",
+      note: "Draft done",
+      needsReview: false,
+    });
+  const [history] = commitmentHistory(s);
+  assert.equal(history.key, "deadline:essay");
+  assert.equal(history.completed_session_count, 1);
+  assert.equal(history.recent_sessions[0].focus, "Focused");
 });

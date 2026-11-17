@@ -25,6 +25,7 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
+import { expireGeneratedTodos } from "@/lib/commitment-context";
 import { useWorkspace } from "@/lib/use-workspace";
 import {
   State,
@@ -36,6 +37,7 @@ import {
   audit,
   assessmentSchema,
   stateSchema,
+  taskSchema,
 } from "@/lib/model";
 import { Editor, EditorState } from "./editor";
 import { Planner } from "./calendar";
@@ -47,7 +49,7 @@ import type {
   GoogleEventInfo,
   ImportedEvent,
 } from "@/lib/google-event-edit";
-import { makeSnapshot } from "@/lib/engine";
+import { makeSnapshot, zonedParts } from "@/lib/engine";
 import {
   evidenceKey,
   priorityResultSchema,
@@ -56,8 +58,11 @@ import {
 } from "@/lib/ai-freshness";
 import { Tasks, Deadlines, Routines, Projects } from "./work-views";
 import { Progress } from "./review";
+import { DailyReviewDialog } from "./daily-review-dialog";
 import { Settings, Health, download } from "./settings";
 import { IconButton, Dialog, Badge, Field } from "./ui";
+const GOOGLE_PULL_INTERVAL = 10_000;
+const GOOGLE_PUSH_DELAY = 500;
 type SyncMode = "full" | "push" | "pull";
 type View =
   | "planner"
@@ -138,6 +143,110 @@ export default function Daylight() {
   busyNow.current = busy;
   const detailsRequest = useRef(0);
   const planningDay = workspaceDay(state);
+  const [reviewReminder, setReviewReminder] = useState<{
+    mode: string;
+    date: string;
+  } | null>(null);
+  const [reviewDate, setReviewDate] = useState<string>();
+  const reviewedReminder = useRef("");
+  const reminderKey = "daylight:review-reminder:" + mode;
+  useEffect(() => {
+    if (
+      !ready ||
+      mode === "demo" ||
+      view === "progress" ||
+      modal ||
+      googleSelection ||
+      search !== null ||
+      taskDrafts ||
+      conflicts ||
+      busy
+    )
+      return;
+    function checkReviewReminder() {
+      if (document.visibilityState !== "visible") return;
+      const today = zonedParts(
+        new Date().toISOString(),
+        state.settings.timezone,
+      );
+      if (
+        today.minute < clockMinutes(state.settings.workEnd) ||
+        state.reviews.some((review) => review.date === today.day) ||
+        reviewedReminder.current === reminderKey + ":" + today.day
+      )
+        return;
+      try {
+        if (localStorage.getItem(reminderKey) === today.day) return;
+      } catch {
+        // The in-memory dismissal still works when storage is unavailable.
+      }
+      setReviewReminder({ mode, date: today.day });
+    }
+    checkReviewReminder();
+    const timer = window.setInterval(checkReviewReminder, 30_000);
+    window.addEventListener("focus", checkReviewReminder);
+    document.addEventListener("visibilitychange", checkReviewReminder);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", checkReviewReminder);
+      document.removeEventListener("visibilitychange", checkReviewReminder);
+    };
+  }, [
+    ready,
+    mode,
+    view,
+    modal,
+    googleSelection,
+    search,
+    taskDrafts,
+    conflicts,
+    busy,
+    reminderKey,
+    state.settings.timezone,
+    state.settings.workEnd,
+    state.reviews,
+  ]);
+  function closeReviewReminder() {
+    if (!reviewReminder) return;
+    reviewedReminder.current = reminderKey + ":" + reviewReminder.date;
+    try {
+      localStorage.setItem(reminderKey, reviewReminder.date);
+    } catch {
+      // Keep the dismissal for this tab session.
+    }
+    setReviewReminder(null);
+  }
+
+  useEffect(() => {
+    if (!ready || mode === "demo") return;
+    function expire() {
+      const current = latestState.current;
+      const { day, minute } = zonedParts(
+        new Date().toISOString(),
+        current.settings.timezone,
+      );
+      if (
+        expireGeneratedTodos(current, day, minute).length ===
+        current.tasks.length
+      )
+        return;
+      try {
+        update((draft) => {
+          draft.tasks = expireGeneratedTodos(draft, day, minute);
+        });
+      } catch {
+        // A frozen workspace can be cleaned up after it is reopened.
+      }
+    }
+    expire();
+    const timer = window.setInterval(expire, 10_000);
+    window.addEventListener("focus", expire);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", expire);
+    };
+  }, [ready, mode, update, state.tasks, state.sessions]);
+
   const savedPriorityRun = state.aiRuns.findLast(
     (run) => run.kind === "priorities",
   );
@@ -248,39 +357,69 @@ export default function Daylight() {
         syncMode === "pull" ? 60000 : 180000,
       );
       if (latestMode.current !== startedMode) return;
-      if (quiet) {
-        // Skip if the user did something meanwhile or nothing changed.
-        if (actionEpoch.current !== epoch) return;
-        if (r.conflicts?.length) {
-          setSyncProblem({
-            message: `${r.conflicts.length} calendar change${r.conflicts.length === 1 ? "" : "s"} need review.`,
-            conflicts: r.conflicts,
-          });
-        } else setSyncProblem(null);
-        if (
-          JSON.stringify(r.events) ===
-          JSON.stringify(latestState.current.events)
-        )
-          return;
-        update((s) => {
-          s.events = r.events;
-        });
+      const current = latestState.current;
+      if (
+        (actionEpoch.current !== epoch && quiet) ||
+        current.settings.calendarId !== sent.settings.calendarId ||
+        current.settings.timezone !== sent.settings.timezone ||
+        current.settings.syncHolidays !== sent.settings.syncHolidays ||
+        current.settings.lastSync !== sent.settings.lastSync
+      )
         return;
+      const changed =
+        JSON.stringify(r.events) !== JSON.stringify(current.events) ||
+        JSON.stringify(r.links) !== JSON.stringify(current.links);
+      const sessionTimes: Pick<
+        State["sessions"][number],
+        "id" | "date" | "start" | "duration"
+      >[] = r.sessionTimes;
+      const previousSessions = new Map(
+        sent.sessions.map((session) => [session.id, session]),
+      );
+      const timesById = new Map(
+        sessionTimes.map((timing) => [timing.id, timing]),
+      );
+      function applySessionTimes(sessions: State["sessions"]) {
+        return sessions.map((session) => {
+          const previous = previousSessions.get(session.id);
+          const timing = timesById.get(session.id);
+          if (
+            !timing ||
+            !previous ||
+            previous.date !== session.date ||
+            previous.start !== session.start ||
+            previous.duration !== session.duration
+          )
+            return session;
+          return { ...session, ...timing };
+        });
       }
-      const quietWrite =
-        syncMode === "push" && !r.written && !r.conflicts.length;
-      update((s) => {
-        s.links = r.links;
-        s.events = r.events;
-        s.settings.lastSync = r.conflicts.length ? null : r.lastSync;
-        if (!quietWrite)
-          audit(
-            s,
-            `Google sync: ${r.written} writes, ${r.conflicts.length} conflicts`,
-            "calendar",
-          );
-      });
-      autoSyncBaseline.current = googleSyncFingerprint(sent);
+      if (changed || sessionTimes.length || !quiet) {
+        update((s) => {
+          s.links = r.links;
+          s.events = r.events;
+          s.sessions = applySessionTimes(s.sessions);
+          if (!quiet || changed || sessionTimes.length)
+            s.settings.lastSync = r.lastSync;
+          if (
+            !quiet &&
+            (syncMode === "full" || r.written || r.conflicts.length)
+          )
+            audit(
+              s,
+              `Google sync: ${r.written} writes, ${r.conflicts.length} conflicts`,
+              "calendar",
+            );
+        });
+      }
+      if (
+        !r.conflicts.length &&
+        (!quiet || autoSyncBaseline.current === googleSyncFingerprint(sent))
+      )
+        autoSyncBaseline.current = googleSyncFingerprint({
+          ...sent,
+          sessions: applySessionTimes(sent.sessions),
+        });
       failedSync.current = null;
       setSyncProblem(
         r.conflicts.length
@@ -290,7 +429,8 @@ export default function Daylight() {
             }
           : null,
       );
-      setConflicts(r.conflicts.length ? r.conflicts : null);
+      if (!quiet || !r.conflicts.length)
+        setConflicts(r.conflicts.length ? r.conflicts : null);
       if (syncMode === "full") {
         notify(
           r.conflicts.length
@@ -316,7 +456,9 @@ export default function Daylight() {
   }, [busy]);
   // Once Google has synced successfully, keep both sides current.
   const userId = auth?.user.id;
-  const googleLinked = !!state.settings.lastSync || state.links.length > 0;
+  const googleLinked =
+    !!state.settings.lastSync ||
+    state.links.some((link) => link.calendarId === state.settings.calendarId);
   useEffect(() => {
     if (!ready || !userId || mode === "demo") return;
     const fingerprint = googleSyncFingerprint(state);
@@ -337,12 +479,12 @@ export default function Daylight() {
         // Try again shortly rather than dropping the change.
         autoSyncTimer.current = setTimeout(
           () => void runSyncRef.current("push"),
-          3000,
+          GOOGLE_PUSH_DELAY,
         );
         return;
       }
       void runSyncRef.current("push");
-    }, 3000);
+    }, GOOGLE_PUSH_DELAY);
     return () => {
       if (autoSyncTimer.current) clearTimeout(autoSyncTimer.current);
     };
@@ -356,7 +498,7 @@ export default function Daylight() {
         syncing.current
       )
         return;
-      if (!force && Date.now() - lastPull.current < 20000) return;
+      if (!force && Date.now() - lastPull.current < 1500) return;
       lastPull.current = Date.now();
       const dirty =
         googleSyncFingerprint(latestState.current) !== autoSyncBaseline.current;
@@ -368,7 +510,7 @@ export default function Daylight() {
       lastPull.current = Date.now();
       void runSyncRef.current("push");
     }, 1500);
-    const id = setInterval(() => tick(true), 60000);
+    const id = setInterval(() => tick(true), GOOGLE_PULL_INTERVAL);
     const wake = () => tick();
     window.addEventListener("focus", wake);
     document.addEventListener("visibilitychange", wake);
@@ -410,7 +552,7 @@ export default function Daylight() {
     }
   }
   async function moveGoogleEvent(event: ImportedEvent, time: EventTime) {
-    if (busy)
+    if (busy || syncing.current)
       throw new Error("Wait for the current calendar or AI action to finish.");
     if (!event.canEdit || !event.googleId || !event.etag)
       throw new Error("This Google event cannot be moved from Daylight.");
@@ -477,6 +619,14 @@ export default function Daylight() {
     }
   }
   function scheduleDroppedTask(taskId: string, date: string, start: string) {
+    if (
+      latestState.current.tasks.some(
+        (task) => task.id === taskId && task.aiTodoDate,
+      )
+    ) {
+      setModal({ kind: "session", taskId, date, start });
+      return;
+    }
     change((s) => {
       const task = s.tasks.find(
         (entry) => entry.id === taskId && entry.status === "active",
@@ -502,7 +652,14 @@ export default function Daylight() {
     });
   }
   async function removeGoogleEvent(event: ImportedEvent) {
-    if (!event.canDelete || !event.googleId || !event.etag || busy) return;
+    if (
+      !event.canDelete ||
+      !event.googleId ||
+      !event.etag ||
+      busy ||
+      syncing.current
+    )
+      return;
     setBusy(true);
     try {
       await api(
@@ -534,7 +691,17 @@ export default function Daylight() {
       const result = await api("/api/projects/propose", { state, projectId });
       if (latestMode.current !== mode) return;
       update((s) => {
+        if (
+          projectDraftKey(s, projectId, "milestones") !== inputKey ||
+          JSON.stringify(s.projects.find((p) => p.id === projectId)?.milestones) !==
+            JSON.stringify(state.projects.find((p) => p.id === projectId)?.milestones)
+        )
+          throw new Error("Your project changed while Gemini was working. Try the proposal again.");
         const p = s.projects.find((p) => p.id === projectId)!;
+        for (const dependency of result.dependencyUpdates ?? []) {
+          const milestone = p.milestones.find((m) => m.id === dependency.milestoneId);
+          if (milestone) milestone.dependsOn = dependency.dependsOn;
+        }
         p.milestones.push(
           ...result.milestones.map(
             (m: State["projects"][number]["milestones"][number]) => ({
@@ -560,7 +727,9 @@ export default function Daylight() {
         audit(s, "AI milestone drafts proposed · " + result.version, projectId);
       });
       notify(
-        "Draft milestones added. Review their assumptions and approve each date.",
+        result.milestones.length
+          ? "Draft milestones added. Review their rationale and approve each date."
+          : result.summary || "Gemini found no additional milestones to propose.",
       );
     } catch (e) {
       notify((e as Error).message);
@@ -573,36 +742,71 @@ export default function Daylight() {
     setBusy(true);
     notify("Asking Gemini for priorities. This can take up to a minute.");
     try {
-      const result = await api("/api/priorities", { state });
+      let result = await api("/api/priorities", { state });
       if (latestMode.current !== mode) return;
-      update((s) =>
+      let usedLocalFallback = false;
+      if (result.aiError) {
+        usedLocalFallback = confirm(
+          result.aiError +
+            "\n\nUse Daylight’s local ranking for this refresh?",
+        );
+        if (!usedLocalFallback) {
+          notify("To-do list unchanged.");
+          return;
+        }
+        result = await api("/api/priorities", {
+          state,
+          useLocalFallback: true,
+        });
+        if (latestMode.current !== mode) return;
+      }
+      const generated = taskSchema.array().parse(result.generatedTasks ?? []);
+      update((s) => {
+        const { day, minute } = zonedParts(
+          new Date().toISOString(),
+          s.settings.timezone,
+        );
+        if (
+          workspaceDay(state) !== day ||
+          evidenceKey(s, day) !== priorityInput
+        )
+          throw new Error(
+            "Your plan changed while refreshing. Refresh to update the to-do bank.",
+          );
+        s.tasks = expireGeneratedTodos(s, day, minute);
+        const scheduledTaskIds = new Set(s.sessions.map((session) => session.taskId));
+        for (const task of s.tasks) {
+          if (!task.aiTodoDate || scheduledTaskIds.has(task.id)) continue;
+          task.title = task.title.replace(/^\s*work\s+on\s+/i, "").trim();
+        }
+        s.tasks.push(...generated);
         s.aiRuns.push({
           id: uid(),
           kind: "priorities",
           createdAt: new Date().toISOString(),
           version: result.version,
-          inputKey: priorityInput,
+          inputKey: evidenceKey(s, day),
           snapshot: result.snapshot,
           output: {
             summary: result.summary,
             recommendations: result.recommendations,
           },
-        }),
-      );
-      notify("AI priorities saved.");
+        });
+      });
+      notify(usedLocalFallback ? "Local priorities saved." : "To-do list refreshed.");
     } catch (e) {
       notify((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-  async function proposeTasks(projectId: string) {
+  async function proposeTasks(projectId: string, milestoneId: string) {
     if (busy) return;
     const inputKey = projectDraftKey(state, projectId, "tasks");
     setBusy(true);
     notify("Asking Gemini for task drafts. This can take up to a minute.");
     try {
-      const result = await api("/api/projects/tasks", { state, projectId });
+      const result = await api("/api/projects/tasks", { state, projectId, milestoneId });
       if (latestMode.current !== mode) return;
       update((s) =>
         s.aiRuns.push({
@@ -843,6 +1047,7 @@ export default function Daylight() {
               key={id}
               className={"nav-item " + (view === id ? "active" : "")}
               onClick={() => {
+                if (id === "progress") setReviewDate(undefined);
                 setView(id);
                 setMobile(false);
               }}
@@ -1089,6 +1294,8 @@ export default function Daylight() {
           )}{" "}
           {view === "progress" && (
             <Progress
+              key={mode + ":" + (reviewDate || "")}
+              initialDate={reviewDate}
               {...props}
               setOutcome={setOutcome}
               api={api}
@@ -1215,7 +1422,7 @@ export default function Daylight() {
       {taskDrafts && (
         <Dialog
           title="Review the next few steps"
-          subtitle="Only the current approved milestone is expanded. Add your own estimates or leave them unknown."
+          subtitle={state.projects.find((p) => p.id === taskDrafts.projectId)?.milestones.find((m) => m.id === taskDrafts.milestoneId)?.title || "Selected milestone"}
           onClose={() => setTaskDrafts(null)}
         >
           <form
@@ -1250,6 +1457,7 @@ export default function Daylight() {
                       estimate,
                       remaining: estimate,
                       projectId: p!.id,
+                      generatedForProjectId: p!.id,
                       milestoneId: m.id,
                       deadlineId: null,
                       importance: "normal",
@@ -1314,10 +1522,22 @@ export default function Daylight() {
           </form>
         </Dialog>
       )}
+      {reviewReminder?.mode === mode && (
+        <DailyReviewDialog
+          key={mode + ":" + reviewReminder.date}
+          state={state}
+          date={reviewReminder.date}
+          aiReady={aiReady}
+          api={api}
+          update={(fn) => {
+            if (latestMode.current === mode) update(fn);
+          }}
+          onClose={closeReviewReminder}
+        />
+      )}
       {conflicts && (
         <Dialog
           title="A few calendar changes need review"
-          subtitle="Daylight preserved both versions. No conflicting event was overwritten."
           onClose={() => setConflicts(null)}
         >
           <div className="conflict-list">
@@ -1332,12 +1552,7 @@ export default function Daylight() {
                 )}
               </div>
             ))}
-            <p className="form-hint">
-              Make the event match your intended Daylight date and time, or
-              update the Daylight record to match Google. Then sync again.
-              Deleted Google events require restoring the original event or
-              removing the related Daylight record.
-            </p>
+            <p className="form-hint">Check the issues above and sync again.</p>
             <button
               className="button primary"
               onClick={() => setConflicts(null)}

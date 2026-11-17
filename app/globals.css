@@ -859,6 +859,25 @@ button.plain {
 .deadline-strip-card {
   background: #faf5eb;
 }
+.deadline-date-group {
+  flex: 0 0 auto;
+  padding-right: 12px;
+  border-right: 2px solid #b8c0ae;
+}
+.deadline-date-group:last-child {
+  border-right: 0;
+}
+.deadline-date-group h3 {
+  margin: 0 0 6px;
+  color: #566646;
+  font-size: 11px;
+}
+.deadline-date-cards {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: calc(100% - 20px);
+}
 .deadline-strip-card small {
   color: #7a502b;
 }
@@ -2130,6 +2149,14 @@ button.plain {
   font-size: 9px;
   color: #9ca88a;
   margin-top: 10px;
+}
+.project-work-group + .project-work-group {
+  margin-top: 22px;
+}
+.project-work-group h4 {
+  margin: 16px 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .project-task {
   display: flex;
@@ -3926,6 +3953,19 @@ button.plain {
   max-height: 280px;
   overflow: auto;
 }
+@media (min-width: 761px) {
+  .planner-workspace .todo-rail {
+    align-self: stretch;
+    contain: size;
+    display: flex;
+    flex-direction: column;
+  }
+  .todo-rail .todo-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+}
 .todo-rail .task-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
@@ -3974,4 +4014,45 @@ button.plain {
   background: #edf3e8;
   border-color: #dde9d6;
   color: #516b43;
+}
+
+.daily-review-flow,
+.daily-review-fields,
+.daily-review-metrics {
+  display: grid;
+  gap: 12px;
+}
+.daily-review-flow {
+  padding: 16px 22px;
+}
+.daily-review-steps {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.daily-review-steps span {
+  flex: 1;
+  height: 4px;
+  border-radius: 4px;
+  background: currentColor;
+  opacity: 0.18;
+}
+.daily-review-steps span[data-reached="true"] {
+  opacity: 0.85;
+}
+.daily-review-metrics progress {
+  width: 100%;
+}
+
+.archived-project-notice {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  color: #455735;
+  font-size: 14px;
+}
+.archived-project-notice strong {
+  font-size: 17px;
 }

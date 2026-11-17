@@ -12,10 +12,10 @@ import {
 import {
   State,
   Outcome,
-  dayKey,
   addDays,
   formatDate,
   durationLabel,
+  displayTime,
   uid,
   Review,
   audit,
@@ -27,7 +27,8 @@ import {
   projectHealth,
 } from "@/lib/engine";
 import { PageHeading, ViewProps } from "./work-views";
-import { evidenceKey } from "@/lib/ai-freshness";
+import { deadlineEntries } from "@/lib/deadlines";
+import { evidenceKey, workspaceDay } from "@/lib/ai-freshness";
 import { Badge, Field, OutcomeSelect, Empty, SectionHead } from "./ui";
 export function Progress({
   state,
@@ -37,6 +38,7 @@ export function Progress({
   setOutcome,
   api,
   aiReady,
+  initialDate,
 }: {
   state: State;
   update: ViewProps["update"];
@@ -45,8 +47,10 @@ export function Progress({
   setOutcome: (kind: string, id: string, date: string, value: Outcome) => void;
   api: (path: string, body?: unknown, method?: string) => Promise<any>;
   aiReady: boolean;
+  initialDate?: string;
 }) {
-  const [date, setDate] = useState(dayKey()),
+  const [commitmentKey, setCommitmentKey] = useState("");
+  const [date, setDate] = useState(() => initialDate ?? workspaceDay(state)),
     [answers, setAnswers] = useState<{
       focus?: string;
       blocker?: string;
@@ -91,6 +95,7 @@ export function Progress({
             focus,
             blocker,
             accomplishment,
+            commitmentKey: commitmentKey || undefined,
           })
         : { assessment: assess(snapshot), snapshot, version: RULE_VERSION };
       const record: Review = {
@@ -103,6 +108,8 @@ export function Progress({
         focus,
         blocker,
         accomplishment,
+        commitmentKey: commitmentKey || undefined,
+        commitmentUpdates: result.commitmentUpdates,
         assessment: result.assessment,
         snapshot: result.snapshot,
       };
@@ -121,13 +128,6 @@ export function Progress({
       setBusy(false);
     }
   }
-  const weekStart = addDays(date, -6),
-    weekReviews = state.reviews.filter(
-      (r) => r.date >= weekStart && r.date <= date,
-    ),
-    weekSessions = state.sessions.filter(
-      (s) => s.date >= weekStart && s.date <= date,
-    );
   return (
     <>
       <PageHeading
@@ -158,11 +158,12 @@ export function Progress({
           <input
             type="date"
             aria-label="Review date"
-            max={dayKey()}
+            max={workspaceDay(state)}
             value={date}
             onChange={(e) => {
               if (!e.target.value) return;
               setAnswers({});
+              setCommitmentKey("");
               setDate(e.target.value);
             }}
           />
@@ -253,7 +254,11 @@ export function Progress({
                   </select>
                 </Field>
                 <Field
-                  label={needsBlocker ? "Main blocker?" : "Blocker · if any"}
+                  label={
+                    needsBlocker
+                      ? "Main blocker?"
+                      : "Anything blocking your next step?"
+                  }
                 >
                   <select
                     value={
@@ -291,7 +296,12 @@ export function Progress({
                   />
                 </Field>
               )}
-              <Field label="What changed?">
+              <CommitmentField
+                state={state}
+                value={commitmentKey}
+                onChange={setCommitmentKey}
+              />
+              <Field label="What moved forward, and what’s left?">
                 <input
                   placeholder="A concrete accomplishment or important update…"
                   maxLength={4000}
@@ -420,77 +430,12 @@ export function Progress({
           )}
         </div>
       ) : (
-        <>
-          <div className="panel weekly-panel">
-            <span className="eyebrow">
-              {formatDate(weekStart)} — {formatDate(date)} · ON-DEMAND SUMMARY
-            </span>
-            <h2>A week of small steps.</h2>
-            <div className="review-counts">
-              <div>
-                <strong>
-                  {weekSessions.filter((s) => s.outcome !== "pending").length}
-                </strong>
-                <span>confirmed session outcomes</span>
-              </div>
-              <div>
-                <strong>
-                  {state.tasks.filter(
-                    (t) =>
-                      t.completedAt &&
-                      t.completedAt.slice(0, 10) >= weekStart &&
-                      t.completedAt.slice(0, 10) <= date,
-                  ).length +
-                    state.routineRecords.filter(
-                      (r) =>
-                        r.date >= weekStart &&
-                        r.date <= date &&
-                        r.outcome === "completed",
-                    ).length}
-                </strong>
-                <span>tasks and routines completed</span>
-              </div>
-              <div>
-                <strong>{new Set(weekReviews.map((r) => r.date)).size}</strong>
-                <span>days reviewed</span>
-              </div>
-            </div>
-            <p>
-              {weekSessions.filter((s) => s.outcome === "blocked").length}{" "}
-              blocked sessions ·{" "}
-              {weekSessions.filter((s) => s.outcome === "pending").length}{" "}
-              unconfirmed sessions. Planned duration has not been counted as
-              actual work.
-            </p>
-            <p>
-              {
-                state.routineRecords.filter(
-                  (r) =>
-                    r.date >= weekStart &&
-                    r.date <= date &&
-                    r.outcome === "completed",
-                ).length
-              }{" "}
-              routine occurrences confirmed completed.
-            </p>
-          </div>
-          <div className="weekly-projects">
-            {state.projects
-              .filter((p) => p.status === "active")
-              .map((p) => (
-                <div className="panel" key={p.id}>
-                  <Badge>{projectHealth(state, p, date).label}</Badge>
-                  <h3>{p.title}</h3>
-                  <p>{projectHealth(state, p, date).reason}</p>
-                </div>
-              ))}
-          </div>
-        </>
+        <WeeklyProgress state={state} date={date} />
       )}
     </>
   );
 }
-function Report({ review }: { review: Review }) {
+export function Report({ review }: { review: Review }) {
   const a = review.assessment;
   return (
     <article className="report">
@@ -573,5 +518,171 @@ function Report({ review }: { review: Review }) {
         </details>
       </details>
     </article>
+  );
+}
+
+export function WeeklyProgress({
+  state,
+  date,
+}: {
+  state: State;
+  date: string;
+}) {
+  const weekStart = addDays(date, -6),
+    weekReviews = state.reviews.filter(
+      (r) => r.date >= weekStart && r.date <= date,
+    ),
+    weekSessions = state.sessions.filter(
+      (s) => s.date >= weekStart && s.date <= date,
+    );
+  const outcomes = weekSessions.filter(
+    (session) => session.outcome !== "pending",
+  );
+  const completed = outcomes.filter(
+    (session) => session.outcome === "completed",
+  ).length;
+  const partial = outcomes.filter((session) =>
+    session.outcome.startsWith("partial"),
+  ).length;
+  const lookAhead = addDays(date, 14);
+  const commitments = deadlineEntries(state)
+    .filter((entry) => !entry.resolved && entry.date <= lookAhead)
+    .sort(
+      (a, b) =>
+        a.date.localeCompare(b.date) ||
+        (a.time ?? "23:59").localeCompare(b.time ?? "23:59") ||
+        a.title.localeCompare(b.title),
+    );
+  return (
+    <>
+      <div className="panel weekly-panel">
+        <span className="eyebrow">
+          {formatDate(weekStart)} — {formatDate(date)}
+        </span>
+        <h2>Week in review</h2>
+        <p>
+          {outcomes.length
+            ? `${completed} of ${outcomes.length} sessions with recorded outcomes were marked complete, and ${partial} made partial progress.`
+            : "No session outcomes were recorded this week."}
+        </p>
+        <div className="review-counts">
+          <div>
+            <strong>
+              {weekSessions.filter((s) => s.outcome !== "pending").length}
+            </strong>
+            <span>confirmed session outcomes</span>
+          </div>
+          <div>
+            <strong>
+              {state.tasks.filter(
+                (t) =>
+                  t.completedAt &&
+                  t.completedAt.slice(0, 10) >= weekStart &&
+                  t.completedAt.slice(0, 10) <= date,
+              ).length +
+                state.routineRecords.filter(
+                  (r) =>
+                    r.date >= weekStart &&
+                    r.date <= date &&
+                    r.outcome === "completed",
+                ).length}
+            </strong>
+            <span>tasks and routines completed</span>
+          </div>
+          <div>
+            <strong>{new Set(weekReviews.map((r) => r.date)).size}</strong>
+            <span>days reviewed</span>
+          </div>
+        </div>
+        <p>
+          {weekSessions.filter((s) => s.outcome === "blocked").length} blocked
+          sessions ·{" "}
+          {weekSessions.filter((s) => s.outcome === "pending").length}{" "}
+          unconfirmed sessions. Planned duration has not been counted as actual
+          work.
+        </p>
+        <p>
+          {
+            state.routineRecords.filter(
+              (r) =>
+                r.date >= weekStart &&
+                r.date <= date &&
+                r.outcome === "completed",
+            ).length
+          }{" "}
+          routine occurrences confirmed completed.
+        </p>
+      </div>
+      <section className="panel weekly-panel">
+        <h2>Next steps</h2>
+        {commitments.length ? (
+          <ul>
+            {commitments.map((entry) => (
+              <li key={entry.kind + ":" + entry.id}>
+                <strong>{entry.title}</strong>
+                {" · "}
+                {formatDate(entry.date)}
+                {entry.time && " at " + displayTime(entry.time)}
+                {" · "}
+                {entry.date < date
+                  ? "Overdue. Check what remains."
+                  : entry.date === date
+                    ? "Due today. Check what remains."
+                    : entry.date <= addDays(date, 7)
+                      ? "Plan time before it’s due."
+                      : "Check whether work needs to start next week."}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p>No open deadlines or milestones are due in the next two weeks.</p>
+        )}
+      </section>
+      <div className="weekly-projects">
+        {state.projects
+          .filter((p) => p.status === "active")
+          .map((p) => (
+            <div className="panel" key={p.id}>
+              <Badge>{projectHealth(state, p, date).label}</Badge>
+              <h3>{p.title}</h3>
+              <p>{projectHealth(state, p, date).reason}</p>
+            </div>
+          ))}
+      </div>
+    </>
+  );
+}
+
+export function CommitmentField({
+  state,
+  value,
+  onChange,
+  disabled,
+}: {
+  state: State;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const entries = deadlineEntries(state).filter((entry) => !entry.resolved);
+  if (!entries.length) return null;
+  return (
+    <Field label="Link this update to a commitment · optional">
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      >
+        <option value="">General update</option>
+        {entries.map((entry) => {
+          const key = entry.kind + ":" + entry.id;
+          return (
+            <option key={key} value={key}>
+              {entry.title} · {formatDate(entry.date)}
+            </option>
+          );
+        })}
+      </select>
+    </Field>
   );
 }

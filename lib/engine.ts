@@ -8,6 +8,7 @@ import {
   clockMinutes,
   durationLabel,
   projectPlanningData,
+  googleOverrides,
 } from "./model";
 export const RULE_VERSION = "daylight-review-v1.0";
 export type Block = {
@@ -95,8 +96,9 @@ export function blocksForDay(
   date: string,
   events = calendarEventIntervals(s),
 ): Block[] {
+  const overridden = googleOverrides(s);
   const blocks: Block[] = s.sessions
-    .filter((x) => x.date === date)
+    .filter((x) => x.date === date && !overridden.has("session:" + x.id))
     .map((x) => ({
       id: x.id,
       sourceId: x.id,
@@ -111,6 +113,15 @@ export function blocksForDay(
       outcome: x.outcome,
       needsReview: x.needsReview,
     }));
+  const occurrenceOverrides = new Set(
+    s.links
+      .filter(
+        (link) =>
+          link.calendarId === s.settings.calendarId &&
+          link.googleOccurrenceDates?.includes(date),
+      )
+      .map((link) => link.key),
+  );
   for (const r of s.routines) {
     const ex = s.exceptions.find(
       (e) => e.routineId === r.id && e.date === date,
@@ -125,12 +136,14 @@ export function blocksForDay(
       (r.recurrenceUnit === "days" || r.days.includes(weekday(date)));
     if (
       r.paused ||
+      overridden.has("routine:" + r.id) ||
+      occurrenceOverrides.has("routine:" + r.id) ||
       date < r.since ||
       (r.until && date > r.until) ||
       (!recurringOnDate && !ex)
     )
       continue;
-    if (ex?.skip) continue;
+    if (ex?.skip || overridden.has(`exception:${r.id}:${date}`)) continue;
     blocks.push({
       id: `${r.id}:${date}`,
       sourceId: r.id,
@@ -147,6 +160,16 @@ export function blocksForDay(
       free: !!r.untimed && !ex,
     });
   }
+  const sessionLinks = new Map(
+    s.links
+      .filter(
+        (link) =>
+          link.calendarId === s.settings.calendarId &&
+          !link.deletedInGoogle &&
+          link.key.startsWith("session:"),
+      )
+      .map((link) => [link.eventId, link.key.slice("session:".length)]),
+  );
   for (const { event: e, start, end } of events) {
     if (
       date < start.day ||
@@ -156,6 +179,28 @@ export function blocksForDay(
       continue;
     const lo = date === start.day ? start.minute : 0,
       hi = date === end.day ? end.minute : 1440;
+    const sessionId = e.googleId && sessionLinks.get(e.googleId);
+    if (sessionId && !overridden.has("session:" + sessionId)) continue;
+    const session = sessionId
+      ? s.sessions.find((item) => item.id === sessionId)
+      : undefined;
+    if (session) {
+      const task = s.tasks.find((item) => item.id === session.taskId);
+      blocks.push({
+        id: session.id,
+        sourceId: session.id,
+        title: task?.title || "Task",
+        date,
+        start: lo,
+        duration: hi - lo,
+        kind: "session",
+        color: task?.projectId ? "lavender" : "sage",
+        outcome: session.outcome,
+        needsReview: session.needsReview,
+        free: e.free,
+      });
+      continue;
+    }
     blocks.push({
       id: e.id,
       sourceId: e.id,
@@ -254,13 +299,25 @@ export function taskDue(s: State, t: Task): string | null {
   );
 }
 export function scheduledTaskIds(s: State) {
-  return new Set(s.sessions.map((session) => session.taskId));
+  const deleted = new Set(
+    s.links
+      .filter(
+        (link) =>
+          link.calendarId === s.settings.calendarId && link.deletedInGoogle,
+      )
+      .map((link) => link.key),
+  );
+  return new Set(
+    s.sessions
+      .filter((session) => !deleted.has("session:" + session.id))
+      .map((session) => session.taskId),
+  );
 }
 
 export function recommendations(s: State, date = dayKey(), asOf = new Date()) {
   const scheduled = scheduledTaskIds(s);
   return s.tasks
-    .filter((t) => t.status === "active")
+    .filter((t) => t.status === "active" && !t.deletedProject)
     .map((t) => {
       const due = taskDue(s, t),
         days = due
@@ -279,6 +336,8 @@ export function recommendations(s: State, date = dayKey(), asOf = new Date()) {
             : 0;
       let reason = "No upcoming deadline. Make room when it fits.";
       let score = t.importance === "high" ? 20 : 0;
+      if (t.includeDate === date)
+        reason = "Included for consideration in today’s to-do list.";
       if (days !== null) {
         score += days < 0 ? 120 : Math.max(0, 75 - days * 5);
         reason =
@@ -320,12 +379,13 @@ export function makeSnapshot(
   // Historic reviews use today's remaining capacity, never elapsed time from the reviewed day.
   const planningDate = date < now.day ? now.day : date;
   const sessions = s.sessions.filter((x) => x.date === date);
-  const active = s.tasks.filter((t) => t.status === "active");
+  const active = s.tasks.filter((t) => t.status === "active" && !t.deletedProject);
   const upcoming = active.map((t) => ({
     id: t.id,
     title: t.title,
     due: taskDue(s, t),
     due_time: taskDueTime(s, t) || null,
+    include_on: t.includeDate || null,
     remaining_minutes: t.remaining ?? t.estimate,
     available_minutes:
       taskDue(s, t) && taskDue(s, t)! >= planningDate
@@ -538,7 +598,7 @@ export function projectHealth(
   const tasks = s.tasks.filter(
     (t) =>
       t.projectId === p.id &&
-      t.status === "active" &&
+      t.status === "active" && !t.deletedProject &&
       t.milestoneId === next.id,
   );
   const taskEstimatesKnown =

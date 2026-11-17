@@ -65,7 +65,7 @@ http://localhost:3000/api/google/callback
 
 Add your Google account as an OAuth test user if the consent screen is in testing. Sign in to Daylight, then use Settings → Connect Google → Check connection → choose a writable calendar → Sync now.
 
-- Sync is **manual**, not a background service.
+- After the first successful sync, Daylight pushes edits and checks Google about every ten seconds while the signed-in workspace is open and visible. Use **Sync now** to check immediately.
 - The selected calendar is imported from 31 days ago through 366 days ahead. Other calendars are not assumed to be included in capacity.
 - The **Include Google holiday calendars** setting is enabled by default. Sync imports visible Google holiday subscriptions for the current and following calendar year. To add a region or observance, [manage holidays in Google Calendar](https://support.google.com/calendar/answer/13748345), then sync in Daylight. Holidays and other events marked free do not consume capacity.
 - Routines use one recurring Google event with RRULE. Single-occurrence exceptions use EXDATE, plus a separate event only when moved.
@@ -74,7 +74,8 @@ Add your Google account as an OAuth test user if the consent screen is in testin
 - Daylight records carry private ownership tags. Sync updates and deletions require ownership verification and `If-Match` etags. Removing a session in Daylight takes effect in Google on the next sync.
 - To delete an imported event, open it in the planner and choose **Delete from Google Calendar**. This applies immediately if the calendar is writable and the event has not changed in Google since sync. For recurring events this deletes one occurrence. Holidays remain read-only.
 - To move an imported event, sync once, then drag it to a date or time or choose **Edit date and time**. **Save time in Google** updates only the dates and times of the selected event or occurrence; the other Google fields stay in place. The event details view loads the description, location, guests, meeting links, attachments, and other fields Google makes available to the connected account.
-- Changes to Daylight-owned events in Google are flagged for review. Edit the original Daylight session, routine, or deadline, then sync. Conflicting changes are not automatically merged.
+- Google moves, renames, and cancellations of linked copies are reflected in the planner. The original Daylight task, deadline, routine, and recorded work remain available. Editing the calendar fields of a cancelled record after sync can publish a replacement.
+- When Daylight edits a linked event, it sends only the projected fields that changed. If both sides edit the same field between syncs, the pending Daylight edit takes precedence. Google version checks detect changes made during the write.
 - Completed tasks retain their pending sessions with a review flag. Resolving a deadline preserves its Google marker with a completed label.
 - Disconnect removes only this app's new stored credentials. It does not revoke the whole shared Google OAuth grant, delete Google events, or touch older saved connections.
 

@@ -5,7 +5,7 @@ import { requireUser, limited, readBody, failure } from "@/lib/server/auth";
 import { accessToken } from "@/lib/server/google";
 import { synchronizeWorkspace } from "@/lib/server/sync";
 export const maxDuration = 300;
-// Pull runs about once a minute and push runs after edits, so each gets its own
+// Pull runs about every ten seconds and push runs after edits, so each gets its own
 // hourly allowance instead of sharing one tiny bucket with manual syncs.
 const allowance = { full: 120, push: 360, pull: 600 } as const;
 export async function POST(req: NextRequest) {

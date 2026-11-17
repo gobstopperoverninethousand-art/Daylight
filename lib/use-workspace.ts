@@ -129,6 +129,22 @@ export function useWorkspace() {
             const remote = validateReferences(stateSchema.parse(data.document));
             if (cached?.dirty && cached.version === data.revision) {
               next = cached.state;
+            } else if (
+              cached?.dirty &&
+              JSON.stringify(cached.state) === JSON.stringify(remote)
+            ) {
+              next = remote;
+              version.current = data.revision;
+              dirty.current = false;
+              localStorage.setItem(
+                key(),
+                JSON.stringify({
+                  state: remote,
+                  version: data.revision,
+                  dirty: false,
+                  stamp: new Date().toISOString(),
+                }),
+              );
             } else if (cached?.dirty) {
               next = cached.state;
               frozen.current = true;

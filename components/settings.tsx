@@ -523,7 +523,7 @@ export function Settings({
               >
                 {aiCheck
                   ? aiCheck.success
-                    ? "Connection verified"
+                    ? "Model access verified"
                     : "Connection failed"
                   : health?.aiConfigured
                     ? "Key loaded"

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { State, dayKey, addDays } from "../model";
+import { State, addDays, clockTime, sessionSchema } from "../model";
 import {
   outboundEvents,
+  canonicalEvent,
   eventFingerprint,
   GoogleEvent,
   localInstant,
@@ -17,7 +18,7 @@ import {
   isWritableCalendar,
 } from "./google";
 // full: verify every linked event. push: write only records changed since the
-// last sync, then import. pull: import only (cheap enough to run every minute).
+// last sync, then import. pull: read Google changes without writing to Google.
 export type SyncMode = "full" | "push" | "pull";
 export async function synchronizeWorkspace(
   state: State,
@@ -37,224 +38,295 @@ export async function synchronizeWorkspace(
       403,
     );
   const desired = outboundEvents(state),
-    links = [...state.links],
     conflicts: {
       key: string;
       title: string;
       reason: string;
       url?: string;
     }[] = [];
-  const old = state.links.filter((l) => l.calendarId === calendarId);
+  const old = new Map(
+    state.links
+      .filter((l) => l.calendarId === calendarId)
+      .map((l) => [l.key, l]),
+  );
+  const desiredByKey = new Map(desired.map(({ key, event }) => [key, event]));
+  const nextLinks = new Map([...old].map(([key, link]) => [key, { ...link }]));
   let written = 0;
   const pushing = mode !== "pull";
   if (pushing && desired.length > 500)
     throw new HttpError(
-      "This manual sync supports up to 500 Daylight records. Archive/export older records before synchronizing larger workspaces.",
+      "This sync supports up to 500 Daylight records. Archive/export older records before synchronizing larger workspaces.",
       400,
     );
-  // Stable Google event IDs make retries safe even if a response or local save is interrupted.
-  for (const { key, event } of pushing ? desired : []) {
-    const eventId = createHash("sha256")
+
+  const keys = [
+    ...new Set([...old.keys(), ...(pushing ? desiredByKey.keys() : [])]),
+  ];
+  const sessionTimes: Pick<
+    State["sessions"][number],
+    "id" | "date" | "start" | "duration"
+  >[] = [];
+  const sessions = new Map(
+    state.sessions.map((session) => ["session:" + session.id, session]),
+  );
+  async function fetchLinked(key: string) {
+    const initialId = createHash("sha256")
       .update(userId + ":" + calendarId + ":" + key)
       .digest("hex");
-    const link = old.find((l) => l.key === key);
-    const fingerprint = eventFingerprint(event);
-    if (mode === "push" && link && link.fingerprint === fingerprint) continue;
-    const path = base + "/" + encodeURIComponent(link?.eventId || eventId);
-    let current: GoogleEvent | null = null;
-    const fetched = await googleFetch(token, path);
-    if (fetched.ok) current = await fetched.json();
-    else if (fetched.status !== 404 && fetched.status !== 410)
+    const path =
+      base + "/" + encodeURIComponent(old.get(key)?.eventId || initialId);
+    return { initialId, path, fetched: await googleFetch(token, path) };
+  }
+  const prefetched = new Map<string, ReturnType<typeof fetchLinked>>();
+  for (const [index, key] of keys.entries()) {
+    if (!pushing && index % 8 === 0) {
+      for (const pending of keys.slice(index, index + 8)) {
+        if (desiredByKey.has(pending))
+          prefetched.set(pending, fetchLinked(pending));
+      }
+      await Promise.all(prefetched.values());
+    }
+    const link = old.get(key);
+    const event = desiredByKey.get(key);
+    const fingerprint = event && eventFingerprint(event);
+    const localChanged = !!event && fingerprint !== link?.fingerprint;
+    if (mode === "push" && link && event && !localChanged) continue;
+    if (!pushing && !event) continue;
+
+    const { initialId, path, fetched } = await (prefetched.get(key) ||
+      fetchLinked(key));
+    prefetched.delete(key);
+    const gone = fetched.status === 404 || fetched.status === 410;
+    if (!fetched.ok && !gone)
       throw new HttpError(
         `Could not read Google events (${fetched.status}). Retry synchronization.`,
         502,
       );
-    if (
-      current &&
-      (current.extendedProperties?.private?.daylightOwner !== userId ||
-        current.extendedProperties?.private?.daylightKey !== key)
-    ) {
+    const current: GoogleEvent | null = fetched.ok
+      ? await fetched.json()
+      : null;
+    const cancelled = current?.status === "cancelled";
+    const owned =
+      current?.extendedProperties?.private?.daylightOwner === userId &&
+      current.extendedProperties.private.daylightKey === key;
+
+    // Cancelled resources can contain only an ID. Check live resources separately.
+    if (current && !cancelled && !owned) {
       conflicts.push({
         key,
-        title: event.summary || key,
+        title: event?.summary || key,
         reason: "Event ownership could not be verified.",
-      });
-      continue;
-    }
-    if (current?.status === "cancelled" || (!current && link)) {
-      // A Daylight-created event can be removed from Google directly. Keep
-      // the local task/session, but drop the link so the event is not recreated
-      // on every subsequent sync.
-      const removedIndex = links.findIndex(
-        (l) => l.key === key && l.calendarId === calendarId,
-      );
-      if (removedIndex >= 0) links.splice(removedIndex, 1);
-      continue;
-    }
-    if (
-      current &&
-      (!link || current.etag !== link.etag) &&
-      eventFingerprint(current) !== fingerprint
-    ) {
-      conflicts.push({
-        key,
-        title: event.summary || key,
-        reason: "Changed in Google Calendar. Daylight preserved both versions.",
         url: current.htmlLink,
       });
       continue;
     }
+
+    if (current && !cancelled && !current.etag) {
+      conflicts.push({
+        key,
+        title: current.summary || event?.summary || key,
+        reason: "Google did not return an event version. Retry syncing.",
+        url: current.htmlLink,
+      });
+      continue;
+    }
+
+    if (!event) {
+      if (!gone && !cancelled) {
+        const removed = await googleFetch(token, path, {
+          method: "DELETE",
+          headers: current?.etag ? { "If-Match": current.etag } : {},
+        });
+        if (!removed.ok && removed.status !== 404 && removed.status !== 410) {
+          conflicts.push({
+            key,
+            title: current?.summary || "Removed record",
+            reason: "Google could not remove this event. Retry syncing.",
+            url: current?.htmlLink,
+          });
+          continue;
+        }
+        if (removed.ok) written++;
+      }
+      nextLinks.delete(key);
+      continue;
+    }
+
+    if (cancelled || (gone && link)) {
+      // Keep the deletion across pulls and retries. An edit after Daylight has
+      // observed the deletion can publish a new copy with a fresh stable ID.
+      if (!link?.deletedInGoogle || !localChanged || !pushing) {
+        nextLinks.set(key, {
+          key,
+          calendarId,
+          eventId: link?.eventId || initialId,
+          etag: "",
+          fingerprint: link?.deletedInGoogle ? link.fingerprint : fingerprint!,
+          deletedInGoogle: true,
+        });
+        continue;
+      }
+    }
+
     let saved = current;
-    if (!current || eventFingerprint(current) !== fingerprint) {
-      const payload = {
+    const create = !current || cancelled;
+    if (pushing && (create || localChanged)) {
+      const privateTags = { daylightOwner: userId, daylightKey: key };
+      const replacement = link?.deletedInGoogle && (gone || cancelled);
+      const eventId = replacement
+        ? createHash("sha256")
+            .update(link.eventId + ":replacement")
+            .digest("hex")
+        : initialId;
+      let payload: GoogleEvent = {
         ...event,
-        extendedProperties: {
-          private: { daylightOwner: userId, daylightKey: key },
-        },
+        extendedProperties: { private: privateTags },
       };
-      const res = await googleFetch(token, current ? path : base, {
-        method: current ? "PATCH" : "POST",
-        headers: current?.etag ? { "If-Match": current.etag } : {},
-        body: JSON.stringify(current ? payload : { id: eventId, ...payload }),
-      });
-      if (res.status === 409 || res.status === 412) {
-        conflicts.push({
-          key,
-          title: event.summary || key,
-          reason:
-            "A concurrent change was detected. Retry after reviewing Google Calendar.",
-        });
-        continue;
+      if (!create && link) {
+        // Merge field changes against the last Daylight projection. Google-only
+        // changes (including metadata outside this projection) stay in Google.
+        const previous = readFingerprint(link.fingerprint);
+        const local = canonicalEvent(event);
+        payload = {};
+        if (local.summary !== previous?.summary)
+          payload.summary = event.summary;
+        if (local.description !== previous?.description)
+          payload.description = event.description;
+        if (local.transparency !== previous?.transparency)
+          payload.transparency = local.transparency;
+        if (
+          JSON.stringify(local.recurrence) !==
+          JSON.stringify(previous?.recurrence)
+        )
+          payload.recurrence = event.recurrence || [];
+        if (
+          local.start !== previous?.start ||
+          local.end !== previous?.end ||
+          local.timezone !== previous?.timezone
+        ) {
+          payload.start = event.start;
+          payload.end = event.end;
+        }
       }
-      if (res.status === 400) {
-        const detail = (await res.json().catch(() => null))?.error?.message;
-        conflicts.push({
-          key,
-          title: event.summary || key,
-          reason:
-            "Google rejected this event" +
-            (detail ? ": " + String(detail).slice(0, 160) : " (400)") +
-            ". Everything else still synchronized.",
+      // An owned stable ID without a link means the insert succeeded on a previous attempt.
+      if (create || (link && Object.keys(payload).length)) {
+        const res = await googleFetch(token, create ? base : path, {
+          method: create ? "POST" : "PATCH",
+          headers: !create && current?.etag ? { "If-Match": current.etag } : {},
+          body: JSON.stringify(create ? { id: eventId, ...payload } : payload),
         });
-        continue;
+        if (create && res.status === 409) {
+          const retry = await googleFetch(
+            token,
+            base + "/" + encodeURIComponent(eventId),
+          );
+          if (retry.ok) {
+            const candidate: GoogleEvent = await retry.json();
+            if (
+              candidate.status !== "cancelled" &&
+              candidate.extendedProperties?.private?.daylightOwner === userId &&
+              candidate.extendedProperties.private.daylightKey === key
+            )
+              saved = candidate;
+          }
+        } else if (res.ok) {
+          saved = await res.json();
+          written++;
+        }
+        if (!res.ok && (res.status !== 409 || saved === current)) {
+          if (res.status === 409 || res.status === 412 || res.status === 400) {
+            const detail =
+              res.status === 400
+                ? (await res.json().catch(() => null))?.error?.message
+                : null;
+            conflicts.push({
+              key,
+              title: event.summary || key,
+              reason:
+                res.status === 400
+                  ? "Google rejected this event" +
+                    (detail ? ": " + String(detail).slice(0, 160) : " (400)") +
+                    "."
+                  : "Google changed this event during sync. Retry syncing.",
+              url: current?.htmlLink,
+            });
+            continue;
+          }
+          throw new HttpError(
+            `Google could not save an event (${res.status}). Retry synchronization.`,
+            502,
+          );
+        }
       }
-      if (!res.ok)
-        throw new HttpError(
-          `Google could not save an event (${res.status}). Some earlier events may have synchronized; retry is safe.`,
-          502,
-        );
-      saved = await res.json();
-      written++;
     }
-    const next = {
-      key,
-      eventId: saved!.id!,
-      etag: saved!.etag!,
-      fingerprint,
-      calendarId,
-    };
-    const idx = links.findIndex(
-      (l) => l.key === key && l.calendarId === calendarId,
-    );
-    if (idx >= 0) links[idx] = next;
-    else links.push(next);
-  }
-  // Only explicitly removed Daylight records with an owned, unchanged linked event may be deleted.
-  for (const link of pushing
-    ? old.filter((l) => !desired.some((d) => d.key === l.key))
-    : []) {
-    const path = base + "/" + encodeURIComponent(link.eventId);
-    const r = await googleFetch(token, path);
-    if (r.status === 404 || r.status === 410) {
-      links.splice(
-        links.findIndex((l) => l === link),
-        1,
-      );
-      continue;
-    }
-    if (!r.ok)
-      throw new HttpError("Could not verify an event before removal.", 502);
-    const event: GoogleEvent = await r.json();
+
+    if (!saved?.id || !saved.etag) continue;
+    let baseline = pushing ? fingerprint! : link!.fingerprint;
+    const local = readFingerprint(baseline) || canonicalEvent(event);
+    const remote = canonicalEvent(saved);
+    const session = sessions.get(key);
+    const intervalChanged =
+      remote.start !== local.start || remote.end !== local.end;
+    const startTime = saved.start?.dateTime;
+    const endTime = saved.end?.dateTime;
+    let nativeTime = !intervalChanged;
     if (
-      event.extendedProperties?.private?.daylightOwner !== userId ||
-      event.extendedProperties?.private?.daylightKey !== link.key ||
-      event.etag !== link.etag
+      session &&
+      intervalChanged &&
+      startTime &&
+      endTime &&
+      (pushing || !localChanged)
     ) {
-      conflicts.push({
-        key: link.key,
-        title: event.summary || "Removed record",
-        reason: "Google changed this event. It was preserved.",
-        url: event.htmlLink,
-      });
-      continue;
+      const start = zonedParts(startTime, state.settings.timezone);
+      const end = zonedParts(endTime, state.settings.timezone);
+      const endMinute =
+        end.day === start.day
+          ? end.minute
+          : end.day === addDays(start.day, 1) && end.minute === 0
+            ? 1440
+            : -1;
+      const timing = {
+        id: session.id,
+        date: start.day,
+        start: clockTime(start.minute),
+        duration: endMinute - start.minute,
+      };
+      if (
+        sessionSchema.safeParse({ ...session, ...timing }).success &&
+        localInstant(timing.date, timing.start, state.settings.timezone) ===
+          remote.start &&
+        localInstant(
+          end.day,
+          clockTime(end.minute),
+          state.settings.timezone,
+        ) === remote.end
+      ) {
+        sessionTimes.push(timing);
+        baseline = JSON.stringify({
+          ...local,
+          start: remote.start,
+          end: remote.end,
+        });
+        nativeTime = true;
+      }
     }
-    const removed = await googleFetch(token, path, {
-      method: "DELETE",
-      headers: { "If-Match": link.etag },
+    const googleOverride = session
+      ? !nativeTime
+      : remote.summary !== local.summary ||
+        remote.start !== local.start ||
+        remote.end !== local.end ||
+        remote.transparency !== local.transparency ||
+        JSON.stringify(remote.recurrence) !== JSON.stringify(local.recurrence);
+    nextLinks.set(key, {
+      key,
+      calendarId,
+      eventId: saved.id,
+      etag: saved.etag,
+      fingerprint: baseline,
+      ...(googleOverride ? { googleOverride } : {}),
     });
-    if (!removed.ok && removed.status !== 404 && removed.status !== 410) {
-      conflicts.push({
-        key: link.key,
-        title: event.summary || "Removed record",
-        reason: "Removal could not be completed.",
-      });
-      continue;
-    }
-    const index = links.findIndex(
-      (l) => l.key === link.key && l.calendarId === calendarId,
-    );
-    if (index >= 0) links.splice(index, 1);
-    written++;
   }
-  // Background pulls do not write, but they still verify Daylight-owned links.
-  // Without this check, a linked event deleted or edited in Google is invisible
-  // until the user happens to run a full sync.
-  if (mode === "pull") {
-    const desiredByKey = new Map(desired.map(({ key, event }) => [key, event]));
-    for (const link of old) {
-      const path = base + "/" + encodeURIComponent(link.eventId);
-      const checked = await googleFetch(token, path);
-      if (checked.status === 404 || checked.status === 410) {
-        const removedIndex = links.findIndex((l) => l === link);
-        if (removedIndex >= 0) links.splice(removedIndex, 1);
-        continue;
-      }
-      if (!checked.ok)
-        throw new HttpError("Could not verify linked calendar events.", 502);
-      const current: GoogleEvent = await checked.json();
-      if (current.status === "cancelled") {
-        const removedIndex = links.findIndex((l) => l === link);
-        if (removedIndex >= 0) links.splice(removedIndex, 1);
-        continue;
-      }
-      if (
-        current.extendedProperties?.private?.daylightOwner !== userId ||
-        current.extendedProperties?.private?.daylightKey !== link.key
-      ) {
-        conflicts.push({
-          key: link.key,
-          title: current.summary || link.key,
-          reason: "Event ownership could not be verified.",
-          url: current.htmlLink,
-        });
-        continue;
-      }
-      const desiredEvent = desiredByKey.get(link.key);
-      if (
-        current.etag !== link.etag &&
-        desiredEvent &&
-        eventFingerprint(current) !== eventFingerprint(desiredEvent)
-      ) {
-        conflicts.push({
-          key: link.key,
-          title: current.summary || desiredEvent.summary || link.key,
-          reason:
-            "Changed in Google Calendar. Daylight preserved both versions.",
-          url: current.htmlLink,
-        });
-      }
-    }
-  }
+
   const today = zonedParts(
     new Date().toISOString(),
     state.settings.timezone,
@@ -287,27 +359,95 @@ export async function synchronizeWorkspace(
           to,
           state.settings.timezone,
         );
-        return events.flatMap((e) => {
-          if (e.extendedProperties?.private?.daylightOwner === userId)
+        const linked =
+          calendar.id === target.id
+            ? new Map(
+                [...nextLinks.values()].map((link) => [link.eventId, link]),
+              )
+            : new Map<string, State["links"][number]>();
+        for (const link of linked.values()) delete link.googleOccurrenceDates;
+        const occurrenceDates = new Map<string, Set<string>>();
+        const importedEvents = events.flatMap((e) => {
+          const link = linked.get(e.recurringEventId || e.id || "");
+          const owned = e.extendedProperties?.private?.daylightOwner === userId;
+          if (link?.deletedInGoogle) return [];
+          if (
+            link &&
+            !link.googleOverride &&
+            e.recurringEventId &&
+            link.key.startsWith("routine:")
+          ) {
+            const original = e.originalStartTime;
+            const date =
+              original?.date ||
+              (original?.dateTime &&
+                zonedParts(original.dateTime, state.settings.timezone).day);
+            const moved =
+              !!original &&
+              (original.date !== e.start?.date ||
+                (Date.parse(original.dateTime || "") !==
+                  Date.parse(e.start?.dateTime || "") &&
+                  !!(original.dateTime || e.start?.dateTime)));
+            const series = desiredByKey.get(link.key);
+            const duration = (entry: GoogleEvent) => {
+              const start = entry.start?.dateTime || entry.start?.date;
+              const end = entry.end?.dateTime || entry.end?.date;
+              return start && end ? Date.parse(end) - Date.parse(start) : null;
+            };
+            const changed =
+              e.status === "cancelled" ||
+              moved ||
+              (series &&
+                (e.summary !== series.summary ||
+                  (e.transparency || "opaque") !==
+                    (series.transparency || "opaque") ||
+                  duration(e) !== duration(series)));
+            if (!date || !changed) return [];
+            const dates = occurrenceDates.get(link.key) || new Set<string>();
+            dates.add(date);
+            occurrenceDates.set(link.key, dates);
+          } else if ((owned || link) && !link?.googleOverride) {
             return [];
+          }
           const event = importedGoogleEvent(e, calendar);
           if (!event) return [];
+          if (link) {
+            event.canEdit = false;
+            event.canDelete = false;
+          }
           // Calendar API bounds are instants. Exclude all-day edge events returned
           // by calendars in a different timezone from the planner.
           if (event.allDay && (event.start >= to || event.end <= from))
             return [];
           return [event];
         });
+        for (const [key, dates] of occurrenceDates)
+          nextLinks.get(key)!.googleOccurrenceDates = [...dates].sort();
+        return importedEvents;
       }),
     )
   ).flat();
   return {
-    links,
+    links: [
+      ...state.links.filter((link) => link.calendarId !== calendarId),
+      ...nextLinks.values(),
+    ],
     events: imported,
+    sessionTimes,
     conflicts,
     written,
     lastSync: new Date().toISOString(),
   };
+}
+
+function readFingerprint(
+  value: string,
+): ReturnType<typeof canonicalEvent> | null {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 async function readEvents(
@@ -322,6 +462,7 @@ async function readEvents(
   let pageToken = "";
   const params = new URLSearchParams({
     singleEvents: "true",
+    showDeleted: "true",
     timeMin: localInstant(from, "00:00", timezone),
     timeMax: localInstant(to, "00:00", timezone),
     maxResults: "2500",

@@ -14,8 +14,9 @@ import {
   audit,
   finishTask,
   removeTask,
+  removeProject,
 } from "@/lib/model";
-import { overlap } from "@/lib/engine";
+import { overlap, zonedParts } from "@/lib/engine";
 import { Dialog, Field, DAYS, OUTCOMES } from "./ui";
 export type EditorState = {
   kind:
@@ -64,10 +65,19 @@ export function Editor({
     [projectId, setProjectId] = useState(
       task?.projectId || modal.projectId || "",
     ),
+    [deadlineChoice, setDeadlineChoice] = useState(
+      task?.milestoneId
+        ? "milestone:" + task.milestoneId
+        : task?.deadlineId || modal.deadlineId
+          ? "deadline:" + (task?.deadlineId || modal.deadlineId)
+          : modal.milestoneId
+            ? "milestone:" + modal.milestoneId
+            : "",
+    ),
     [chosenTask, setChosenTask] = useState(
       session?.taskId ||
         modal.taskId ||
-        state.tasks.find((t) => t.status === "active")?.id ||
+        state.tasks.find((t) => t.status === "active" && !t.deletedProject)?.id ||
         "",
     ),
     [untimed, setUntimed] = useState(!!routine?.untimed);
@@ -100,10 +110,28 @@ export function Editor({
             title: str("title"),
             estimate,
             remaining: remaining ?? estimate,
-            deadlineId: str("deadlineId") || null,
+            deadlineId: deadlineChoice.startsWith("deadline:")
+              ? (() => {
+                  const selectedDeadline = s.deadlines.find(
+                    (d) => d.id === deadlineChoice.slice(9),
+                  );
+                  return selectedDeadline &&
+                    (!str("projectId") ||
+                      selectedDeadline.projectId === str("projectId"))
+                    ? selectedDeadline.id
+                    : null;
+                })()
+              : deadlineChoice === "milestone:" + task?.milestoneId
+                ? task?.deadlineId || null
+                : null,
             projectId: str("projectId") || null,
-            milestoneId: str("milestoneId") || null,
+            milestoneId: deadlineChoice.startsWith("milestone:")
+              ? deadlineChoice.slice(10)
+              : null,
             importance: str("importance") as Task["importance"],
+            aiTodoDate: task?.aiTodoDate,
+            generatedForProjectId: task?.generatedForProjectId,
+            includeDate: str("includeDate") || null,
             status: task?.status || "active",
             notes: str("notes"),
             createdAt: task?.createdAt || new Date().toISOString(),
@@ -119,8 +147,15 @@ export function Editor({
             title: str("title"),
             date: str("date"),
             time: str("time") || null,
+            workMode:
+              str("workMode") === "multiple"
+                ? ("multiple" as const)
+                : ("single" as const),
+            remainingMinutes: num("remainingMinutes"),
             projectId: str("projectId") || null,
-            status: deadline?.status || ("active" as const),
+            status: check("resolved")
+              ? ("resolved" as const)
+              : ("active" as const),
             notes: str("notes"),
           };
           const idx = s.deadlines.findIndex((x) => x.id === recordId);
@@ -220,12 +255,15 @@ export function Editor({
             duration,
             outcome: str("outcome") as Session["outcome"],
             actualMinutes: num("actual"),
+            focus: (str("sessionFocus") || undefined) as Session["focus"],
             note: str("note"),
             needsReview: session?.needsReview || false,
           };
           const idx = s.sessions.findIndex((x) => x.id === recordId);
           if (idx >= 0) s.sessions[idx] = value;
           else s.sessions.push(value);
+          const bookedTask = s.tasks.find((task) => task.id === value.taskId);
+          if (bookedTask) delete bookedTask.aiTodoDate;
         }
         if (type === "occurrence") {
           const value = {
@@ -263,14 +301,26 @@ export function Editor({
   }
   function remove() {
     const message =
-      type === "task"
+      type === "project"
+        ? `Delete “${project?.title}”? Past calendar records will be kept. Upcoming project deadlines, milestones, sessions, and unscheduled project tasks will be removed.`
+        : type === "task"
         ? "Delete this task and all of its scheduled sessions? This cannot be undone. Google events will be removed on your next sync."
         : "Remove this " +
           type +
           "? This cannot be undone. Google changes apply only on your next sync.";
     if (type !== "session" && !confirm(message)) return;
+    if (
+      type === "project" &&
+      !confirm(`Permanently delete “${project?.title}”? This cannot be undone.`)
+    )
+      return;
     try {
       update((s) => {
+        if (type === "project") {
+          const { day, minute } = zonedParts(new Date().toISOString(), s.settings.timezone);
+          if (!removeProject(s, modal.id!, day, minute))
+            throw new Error("Project not found.");
+        }
         if (type === "task") {
           if (!removeTask(s, modal.id!)) throw new Error("Task not found.");
           return;
@@ -306,6 +356,69 @@ export function Editor({
       setError((e as Error).message);
     }
   }
+  const sessionTask = state.tasks.find((entry) => entry.id === session?.taskId);
+  const linkedTask = type === "session"
+    ? state.tasks.find((entry) => entry.id === chosenTask)
+    : task;
+  const linkedDeadlineId = type === "task" && deadlineChoice.startsWith("deadline:")
+    ? deadlineChoice.slice(9)
+    : linkedTask?.deadlineId;
+  const linkedDeadline = state.deadlines.find((entry) => entry.id === linkedDeadlineId);
+  const archivedProject = state.projects.find(
+    (entry) =>
+      entry.status === "completed" &&
+      ((type === "milestone" && entry.id === project?.id) ||
+        ((type === "task" || type === "session") &&
+          (entry.id === (type === "task" ? projectId : linkedTask?.projectId) ||
+            entry.id === linkedDeadline?.projectId))),
+  );
+  const deletedProject = task?.deletedProject ?? deadline?.deletedProject ?? sessionTask?.deletedProject;
+  if (deletedProject) {
+    const historicalTitle = task?.title ?? deadline?.title ?? sessionTask?.title;
+    const historicalTask = task ?? sessionTask;
+    const canDeleteHistoricalRecord =
+      !!historicalTask || !!(deadline?.deletedProject && deadline.historicalKind);
+    return (
+      <Dialog title="Deleted project" subtitle={deletedProject} onClose={onClose}>
+        <div className="editor-form">
+          <p>{historicalTitle}</p>
+          <p>This record was kept in your calendar history.</p>
+          <div className="dialog-actions">
+            <button type="button" className="button secondary" onClick={onClose}>
+              Close
+            </button>
+            {canDeleteHistoricalRecord && (
+              <button
+                type="button"
+                className="button secondary danger"
+                onClick={() => {
+                  const confirmText = historicalTask
+                    ? `Delete “${historicalTask.title}” and its scheduled sessions from history?`
+                    : `Delete the past ${deadline?.historicalKind} “${deadline?.title}” from history? Its Google Calendar marker will be removed on the next sync.`;
+                  if (!confirm(confirmText)) return;
+                  update((state) => {
+                    if (historicalTask) {
+                      if (!removeTask(state, historicalTask.id))
+                        throw new Error("Task not found.");
+                    } else if (deadline) {
+                      state.deadlines = state.deadlines.filter(
+                        (entry) => entry.id !== deadline.id,
+                      );
+                      audit(state, "Deleted past project record", deadline.id);
+                    }
+                  });
+                  onSaved(historicalTask ? "Past task and sessions deleted." : "Past milestone deleted.");
+                  onClose();
+                }}
+              >
+                <Trash2 size={15} /> Delete from history
+              </button>
+            )}
+          </div>
+        </div>
+      </Dialog>
+    );
+  }
   return (
     <Dialog
       title={
@@ -328,6 +441,12 @@ export function Editor({
       onClose={onClose}
     >
       <form onSubmit={submit} className="editor-form">
+        {archivedProject && (
+          <p className="notice archived-project-notice">
+            <strong>Project archived</strong>
+            <span>{archivedProject.title} is finished.</span>
+          </p>
+        )}
         {["task", "deadline", "routine", "project", "milestone"].includes(
           type,
         ) && (
@@ -391,15 +510,40 @@ export function Editor({
             <div className="form-grid">
               <Field label="Linked deadline">
                 <select
-                  name="deadlineId"
-                  defaultValue={task?.deadlineId || modal.deadlineId || ""}
+                  value={deadlineChoice}
+                  onChange={(e) => setDeadlineChoice(e.target.value)}
                 >
                   <option value="">No deadline</option>
-                  {state.deadlines.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.title}
-                    </option>
-                  ))}
+                  {state.deadlines
+                    .filter(
+                      (d) =>
+                        (!projectId || d.projectId === projectId) &&
+                        (d.status === "active" || d.id === task?.deadlineId),
+                    )
+                    .map((d) => (
+                      <option key={d.id} value={"deadline:" + d.id}>
+                        {d.title}
+                        {d.status === "resolved" ? " · Completed" : ""}
+                      </option>
+                    ))}
+                  {projectId &&
+                    state.projects
+                      .find((p) => p.id === projectId)
+                      ?.milestones.filter(
+                        (m) =>
+                          (m.approved && !m.completed) ||
+                          m.id === task?.milestoneId,
+                      )
+                      .map((m) => (
+                        <option key={m.id} value={"milestone:" + m.id}>
+                          {m.title} · Milestone
+                          {m.completed
+                            ? " · Completed"
+                            : !m.approved
+                              ? " · Draft"
+                              : ""}
+                        </option>
+                      ))}
                 </select>
               </Field>
               <Field label="Importance">
@@ -416,7 +560,23 @@ export function Editor({
               <select
                 name="projectId"
                 value={projectId}
-                onChange={(e) => setProjectId(e.target.value)}
+                onChange={(e) => {
+                  const nextProjectId = e.target.value;
+                  setProjectId(nextProjectId);
+                  if (deadlineChoice.startsWith("milestone:"))
+                    setDeadlineChoice("");
+                  else if (deadlineChoice.startsWith("deadline:")) {
+                    const selectedDeadline = state.deadlines.find(
+                      (d) => d.id === deadlineChoice.slice(9),
+                    );
+                    if (
+                      selectedDeadline &&
+                      nextProjectId &&
+                      selectedDeadline.projectId !== nextProjectId
+                    )
+                      setDeadlineChoice("");
+                  }
+                }}
               >
                 <option value="">Standalone task</option>
                 {state.projects.map((p) => (
@@ -426,31 +586,22 @@ export function Editor({
                 ))}
               </select>
             </Field>
-            {projectId && (
-              <Field label="Milestone">
-                <select
-                  name="milestoneId"
-                  key={projectId}
-                  defaultValue={task?.milestoneId || modal.milestoneId || ""}
-                >
-                  <option value="">No milestone</option>
-                  {state.projects
-                    .find((p) => p.id === projectId)
-                    ?.milestones.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.title}
-                        {!m.approved ? " · draft" : ""}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-            )}
             <Field label="Notes · optional">
               <textarea
                 name="notes"
                 rows={2}
                 maxLength={4000}
                 defaultValue={task?.notes}
+              />
+            </Field>
+            <Field
+              label="Include in today’s to-do list on · optional"
+              hint="Gemini will prioritize this task on the selected date."
+            >
+              <input
+                type="date"
+                name="includeDate"
+                defaultValue={task?.includeDate || ""}
               />
             </Field>
           </>
@@ -474,6 +625,26 @@ export function Editor({
                 />
               </Field>
             </div>
+            <div className="form-grid">
+              <Field label="Work sessions">
+                <select
+                  name="workMode"
+                  defaultValue={deadline?.workMode ?? "single"}
+                >
+                  <option value="single">One session</option>
+                  <option value="multiple">Multiple sessions</option>
+                </select>
+              </Field>
+              <Field label="Work remaining · minutes (optional)">
+                <input
+                  name="remainingMinutes"
+                  type="number"
+                  min={1}
+                  max={525600}
+                  defaultValue={deadline?.remainingMinutes ?? ""}
+                />
+              </Field>
+            </div>
             <Field label="Project · optional">
               <select name="projectId" defaultValue={deadline?.projectId || ""}>
                 <option value="">No project</option>
@@ -492,6 +663,16 @@ export function Editor({
                 maxLength={4000}
               />
             </Field>
+            {isEdit && (
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  name="resolved"
+                  defaultChecked={deadline?.status === "resolved"}
+                />
+                Mark this deadline as completed
+              </label>
+            )}
             <p className="form-hint">
               This appears as a deadline marker, not a reserved work block.
             </p>
@@ -740,7 +921,7 @@ export function Editor({
                 </option>
                 {state.tasks
                   .filter(
-                    (t) => t.status === "active" || t.id === session?.taskId,
+                    (t) => (t.status === "active" && !t.deletedProject) || t.id === session?.taskId,
                   )
                   .map((t) => (
                     <option key={t.id} value={t.id}>
@@ -807,6 +988,17 @@ export function Editor({
                     />
                   </Field>
                 </div>
+                <Field label="Session focus · optional">
+                  <select
+                    name="sessionFocus"
+                    defaultValue={session?.focus ?? ""}
+                  >
+                    <option value="">Unreported</option>
+                    <option>Focused</option>
+                    <option>Mixed</option>
+                    <option>Distracted</option>
+                  </select>
+                </Field>
                 <Field label="What changed? · optional">
                   <textarea
                     rows={2}
@@ -892,14 +1084,15 @@ export function Editor({
               </button>
             )}
           {isEdit &&
-            ["task", "session", "deadline", "milestone"].includes(type) && (
+            ["task", "session", "deadline", "milestone", "project"].includes(type) && (
               <button
                 type="button"
-                className="icon-button danger"
+                className={type === "project" ? "button secondary danger" : "icon-button danger"}
                 onClick={remove}
                 aria-label={"Delete " + type}
               >
                 <Trash2 size={17} />
+                {type === "project" && "Delete project"}
               </button>
             )}
           {type === "task" && task && (

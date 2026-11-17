@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { Flag } from "lucide-react";
 import { deadlineEntries } from "@/lib/deadlines";
-import { displayTime, formatDate, type State } from "@/lib/model";
+import { addDays, displayTime, formatDate, type State } from "@/lib/model";
 import type { EditorState } from "./editor";
 
 export function DeadlineStrip({
@@ -80,7 +80,15 @@ export function DeadlineStrip({
           aria-label="Deadline cards"
           tabIndex={0}
         >
-          {entries.map((entry) => (
+          {[
+            { label: "Overdue", items: entries.filter((entry) => entry.date < today) },
+            { label: "Due within 7 days", items: entries.filter((entry) => entry.date >= today && entry.date <= addDays(today, 7)) },
+            { label: "Due later", items: entries.filter((entry) => entry.date > addDays(today, 7)) },
+          ].filter((group) => group.items.length).map((group) => (
+          <div className="deadline-date-group" key={group.label}>
+            <h3>{group.label}</h3>
+            <div className="deadline-date-cards">
+          {group.items.map((entry) => (
             <button
               className="planner-item-card deadline-strip-card"
               key={entry.kind + ":" + entry.id}
@@ -96,7 +104,11 @@ export function DeadlineStrip({
               }
             >
               <span className="strip-card-date">
-                {formatDate(entry.date, { month: "short", day: "numeric" })}
+                {formatDate(entry.date, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                })}
                 {entry.time ? " · " + displayTime(entry.time) : ""}
               </span>
               <strong>{entry.title}</strong>
@@ -127,6 +139,9 @@ export function DeadlineStrip({
                 </small>
               )}
             </button>
+          ))}
+            </div>
+          </div>
           ))}
         </div>
       ) : (
