@@ -118,6 +118,16 @@ function deadline(s: State, date = day, time: string | null = null) {
   s.tasks.push(task("task-1", { deadlineId: "deadline-1" }));
 }
 
+test("a recent calendar sync timestamp alone does not stale saved AI results", () => {
+  const s = state();
+  s.settings.lastSync = new Date(Date.now() - 60_000).toISOString();
+  const key = evidenceKey(s, day, [], day);
+  s.settings.lastSync = new Date().toISOString();
+  assert.equal(evidenceKey(s, day, [], day), key);
+  s.settings.lastSync = null;
+  assert.notEqual(evidenceKey(s, day, [], day), key);
+});
+
 test("saving an AI result leaves its inputs fresh; adding a task or scheduling makes the saved result stale", () => {
   const s = state();
   s.tasks.push(task());

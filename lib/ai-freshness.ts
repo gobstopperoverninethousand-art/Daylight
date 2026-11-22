@@ -60,6 +60,8 @@ export function evidenceKey(
       (a, b) =>
         b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
     )[0];
+  const syncedAt = lastSync ? Date.parse(lastSync) : NaN;
+  const calendarStale = !Number.isFinite(syncedAt) || Date.now() - syncedAt > 86400000;
   return fingerprint([
     date,
     today,
@@ -88,7 +90,7 @@ export function evidenceKey(
     workDays,
     horizon,
     calendarId,
-    lastSync,
+    calendarStale,
   ]);
 }
 

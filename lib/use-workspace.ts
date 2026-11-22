@@ -11,6 +11,7 @@ export function useWorkspace() {
     [auth, setAuth] = useState<AuthSession | null>(null),
     [mode, setMode] = useState("local"),
     [status, setStatus] = useState("Loading…"),
+    [cloudReadFailed, setCloudReadFailed] = useState(false),
     [error, setError] = useState("");
   const stateRef = useRef(state),
     version = useRef(0),
@@ -67,30 +68,29 @@ export function useWorkspace() {
           ? e.message
           : (e as { message?: string }).message || "Cloud save failed";
       if (message.includes("revision_conflict")) {
-        const { data: remote, error: readError } = await db
-          .from("daylight_workspaces")
-          .select("document,revision,updated_at")
-          .eq("user_id", authRef.current!.user.id)
-          .single();
-        if (generation !== epoch.current) return;
-        if (readError || !remote) {
-          setError("Could not check the latest cloud copy. Your work is saved in this browser; syncing will retry.");
-          return;
-        }
-        localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({ state: stateRef.current, version: version.current, stamp: editedAt.current }));
-        version.current = Number(remote.revision);
-        if (Date.parse(editedAt.current) <= Date.parse(remote.updated_at)) {
+        try {
+          const { data: remote, error: readError } = await db
+            .from("daylight_workspaces")
+            .select("document,revision,updated_at")
+            .eq("user_id", authRef.current!.user.id)
+            .single();
+          if (generation !== epoch.current) return;
+          if (readError) throw readError;
           const latest = validateReferences(stateSchema.parse(remote.document));
-          stateRef.current = latest;
-          setState(latest);
-          dirty.current = false;
+          localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({ state: stateRef.current, version: version.current, stamp: editedAt.current }));
+          version.current = Number(remote.revision);
+          if (Date.parse(editedAt.current) <= Date.parse(remote.updated_at)) {
+            stateRef.current = latest;
+            editedAt.current = remote.updated_at;
+            setState(latest);
+            dirty.current = false;
+            setStatus("Updated from cloud · " + new Date(remote.updated_at).toLocaleString());
+          }
           persist();
           setError("");
-          setStatus("Updated from cloud · " + new Date(remote.updated_at).toLocaleString());
-        } else {
-          persist();
-          setError("");
-          setStatus("Syncing latest edits…");
+        } catch (error) {
+          console.warn("Daylight could not reconcile the cloud workspace", error instanceof Error ? error.name : "Cloud read failed");
+          setError("Could not reconcile the cloud copy. Sync will retry with your local edits.");
         }
       } else
         setError(
@@ -108,6 +108,7 @@ export function useWorkspace() {
       if (timer.current) clearTimeout(timer.current);
       setReady(false);
       setError("");
+      setCloudReadFailed(false);
       frozen.current = false;
       authRef.current = session;
       setAuth(session);
@@ -195,16 +196,33 @@ export function useWorkspace() {
         } catch (e) {
           if (generation !== epoch.current) return;
           frozen.current = true;
+          setCloudReadFailed(true);
           setStatus("Cloud unavailable");
+          const code = (e as { code?: unknown })?.code;
+          const detail =
+            e instanceof Error
+              ? "The cloud copy could not be read by this version of Daylight."
+              : code === "42501" || code === "PGRST301"
+                ? "This browser’s session could not access the cloud copy."
+                : code === "42P01" || code === "PGRST205"
+                  ? "The configured cloud project is missing the workspace table."
+                  : "Daylight could not reach or read the cloud copy.";
+          console.warn("Daylight workspace load failed", { code, type: e instanceof Error ? e.name : "Cloud read" });
           setError(
-            "Cloud storage is not ready. Local backup preserved. Apply the database migration or check your connection.",
+            detail + " Your local copy is preserved. Daylight will retry.",
           );
         }
       } else setStatus("Saved in this browser");
       if (generation !== epoch.current) return;
       stateRef.current = next;
       setState(next);
-      if (!frozen.current) persist();
+      if (!frozen.current) {
+        try {
+          persist();
+        } catch {
+          setError("Browser storage is unavailable. Export a backup to keep a local copy.");
+        }
+      }
       setReady(true);
     },
     [],
@@ -234,9 +252,53 @@ export function useWorkspace() {
       data.subscription.unsubscribe();
     };
   }, [load]);
+  const retryCloud = useCallback(async () => {
+    if (authRef.current && modeRef.current === authRef.current.user.id) {
+      await load(authRef.current);
+    }
+  }, [load]);
+  useEffect(() => {
+    if (!ready || !cloudReadFailed) return;
+    const id = window.setTimeout(() => void retryCloud(), 15000);
+    return () => window.clearTimeout(id);
+  }, [ready, cloudReadFailed, retryCloud]);
   useEffect(() => {
     if (!ready) return;
     const id = setInterval(() => void save(), 5000);
+    let checkingCloud = false;
+    let active = true;
+    async function pullIfClean() {
+      const session = authRef.current;
+      if (!session || modeRef.current !== session.user.id || dirty.current ||
+          frozen.current || saving.current || checkingCloud || document.hidden)
+        return;
+      const generation = epoch.current;
+      checkingCloud = true;
+      try {
+        const { data } = await browserDb()!
+          .from("daylight_workspaces")
+          .select("document,revision,updated_at")
+          .eq("user_id", session.user.id)
+          .gt("revision", version.current)
+          .maybeSingle();
+        if (!active || generation !== epoch.current || authRef.current?.user.id !== session.user.id || dirty.current ||
+            frozen.current || saving.current || !data || data.revision <= version.current)
+          return;
+        const latest = validateReferences(stateSchema.parse(data.document));
+        stateRef.current = latest;
+        version.current = data.revision;
+        editedAt.current = data.updated_at;
+        setState(latest);
+        setStatus("Updated from cloud · " + new Date(data.updated_at).toLocaleString());
+        persist();
+      } catch {
+        // A background read can retry without interrupting the open workspace.
+      } finally {
+        checkingCloud = false;
+      }
+    }
+    const cloudPoll = window.setInterval(pullIfClean, 15000);
+    window.addEventListener("focus", pullIfClean);
     const before = (e: BeforeUnloadEvent) => {
       if (
         dirty.current &&
@@ -250,6 +312,7 @@ export function useWorkspace() {
       if (e.key === key() && e.newValue) {
         try {
           const incoming = JSON.parse(e.newValue) as Cache;
+          if (incoming.version < version.current && authRef.current?.user.id === modeRef.current) return;
           if (dirty.current && Date.parse(editedAt.current) > Date.parse(incoming.stamp)) return;
           localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({state: stateRef.current, version: version.current, stamp: editedAt.current}));
           const latest = validateReferences(stateSchema.parse(incoming.state));
@@ -267,7 +330,10 @@ export function useWorkspace() {
     window.addEventListener("beforeunload", before);
     window.addEventListener("storage", storage);
     return () => {
+      active = false;
       clearInterval(id);
+      window.clearInterval(cloudPoll);
+      window.removeEventListener("focus", pullIfClean);
       window.removeEventListener("beforeunload", before);
       window.removeEventListener("storage", storage);
     };
@@ -320,6 +386,9 @@ export function useWorkspace() {
     mode,
     status,
     error,
+    cloudReadFailed,
+    retryCloud,
+    canSyncCalendar: () => !frozen.current,
     setError,
     update,
     save,

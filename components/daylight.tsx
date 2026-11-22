@@ -339,6 +339,7 @@ export default function Daylight() {
   // full: verify every linked event (Sync now). push: write what changed, then
   // import. pull: import only, quietly, so Google edits appear on their own.
   async function runSync(syncMode: SyncMode = "full") {
+    if (!workspace.canSyncCalendar()) return;
     if (busyNow.current || syncing.current || mode === "demo" || !auth) return;
     const quiet = syncMode === "pull";
     const startedMode = latestMode.current;
@@ -353,7 +354,7 @@ export default function Daylight() {
         "POST",
         syncMode === "pull" ? 60000 : 180000,
       );
-      if (latestMode.current !== startedMode) return;
+      if (latestMode.current !== startedMode || !workspace.canSyncCalendar()) return;
       const current = latestState.current;
       if (
         (actionEpoch.current !== epoch && quiet) ||
@@ -1283,7 +1284,7 @@ export default function Daylight() {
               </button>
             </div>
           )}
-          {syncProblem && mode !== "demo" && (
+          {syncProblem && mode !== "demo" && !workspace.cloudReadFailed && (
             <div className="workspace-error" role="alert">
               <AlertCircle size={18} />
               <span>{syncProblem.message}</span>
@@ -1306,7 +1307,11 @@ export default function Daylight() {
               >
                 Export backup
               </button>
-              <button
+              {workspace.cloudReadFailed ? (
+                <button onClick={() => void workspace.retryCloud()}>
+                  Retry cloud connection
+                </button>
+              ) : <button
                 onClick={() => {
                   if (
                     confirm(
@@ -1317,7 +1322,7 @@ export default function Daylight() {
                 }}
               >
                 Reload stored copy
-              </button>
+              </button>}
             </div>
           )}
           {!hasData && mode !== "demo" && !welcomeDismissed && (
