@@ -321,6 +321,7 @@ export async function POST(req: NextRequest) {
       (latest, task) => (task.due && task.due > latest ? task.due : latest),
       addDays(today, state.settings.horizon - 1),
     );
+    const dueToday = taskFacts.filter((task) => task.due === today);
     const fallbackIds = () =>
       taskFacts
         .filter((task) => task.tier < 2 && !task.additionalWorkCandidate)
@@ -430,7 +431,9 @@ export async function POST(req: NextRequest) {
               ),
           }),
           await callAI(
-            mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
+            mode === "extras"
+              ? EXTRA_RECOMMENDATIONS_PROMPT
+              : MAIN_TODO_PROMPT + "\nInclude eligible tasks due today and explain the priorities. State that a task was added only if it is in taskIds or recordedWork.",
             input,
           ),
         );
@@ -482,17 +485,17 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ aiError: error.message });
       }
     }
-    const dueToday = taskFacts.filter((task) => task.due === today);
     taskIds = [...new Set(mode === "main"
       ? [...taskIds, ...dueToday.map((task) => task.id)]
       : taskIds)];
     if (mode === "main") {
       const selected = taskIds.map((id) => (generated.get(id) ?? candidatesById.get(id))!.title);
-      summary = selected.length
+      let confirmedSelection = selected.length
         ? `${useLocalFallback ? "Local ranking" : "AI priorities"} selected ${selected.join(", ")}.`
         : "No unscheduled tasks were selected.";
       if (dueToday.length)
-        summary += " Due today: " + dueToday.map((task) => task.title).join(", ") + ".";
+        confirmedSelection += " Due today: " + dueToday.map((task) => task.title).join(", ") + ".";
+      summary = confirmedSelection + "\n\n" + summary;
     }
     const recommendations = taskIds.map((taskId) => ({
       taskId,
