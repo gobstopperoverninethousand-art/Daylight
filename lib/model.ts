@@ -375,12 +375,15 @@ export function audit(state: State, action: string, recordId: string): void {
     recordId,
   });
 }
-export function recordSessionOutcome(state: State, id: string, outcome: Outcome): void {
+export function recordSessionOutcome(state: State, id: string, outcome: Outcome, previousOutcome?: Outcome): void {
   const session = state.sessions.find((entry) => entry.id === id);
   if (!session) return;
+  const previous = previousOutcome ?? session.outcome;
   session.outcome = outcome;
   if (outcome !== "pending") session.needsReview = false;
   if (outcome === "completed") finishTask(state, session.taskId);
+  else if (previous === "completed" && outcome === "pending")
+    finishTask(state, session.taskId, false);
 }
 export function finishTask(state: State, id: string, done = true): void {
   const task = state.tasks.find((t) => t.id === id);

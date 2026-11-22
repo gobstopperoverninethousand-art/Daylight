@@ -283,6 +283,27 @@ test("completing a session finishes its task even below its estimated time", () 
   assert.equal(s.deadlines[0].status, "active");
   assert.equal(recommendations(s, day, now).length, 0);
 });
+test("undoing a completed session reopens its task and clears pending review flags", () => {
+  const s = state();
+  deadline(s);
+  s.sessions.push(session("a"), session("b"));
+  recordSessionOutcome(s, "a", "completed");
+  recordSessionOutcome(s, "a", "pending");
+  assert.equal(s.tasks[0].status, "active");
+  assert.equal(s.tasks[0].completedAt, null);
+  assert.equal(s.sessions[1].needsReview, false);
+  assert.equal(s.deadlines[0].status, "active");
+  assert.ok(recommendations(s, day, now).some((entry) => entry.task.id === "task-1"));
+});
+test("session editor can undo completion after replacing the session record", () => {
+  const s = state();
+  s.tasks.push(task());
+  s.sessions.push(session());
+  recordSessionOutcome(s, "session-1", "completed");
+  s.sessions[0].outcome = "pending";
+  recordSessionOutcome(s, "session-1", "pending", "completed");
+  assert.equal(s.tasks[0].status, "active");
+});
 test("partial outcomes keep the task and its remaining estimate active", () => {
   for (const outcome of ["partial-low", "partial-medium", "partial-high"] as const) {
     const s = state();

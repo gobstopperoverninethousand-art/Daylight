@@ -297,7 +297,7 @@ export function Editor({
           const idx = s.sessions.findIndex((x) => x.id === recordId);
           if (idx >= 0) s.sessions[idx] = value;
           else s.sessions.push(value);
-          recordSessionOutcome(s, recordId, value.outcome);
+          recordSessionOutcome(s, recordId, value.outcome, session?.outcome);
           const bookedTask = s.tasks.find((task) => task.id === value.taskId);
           if (bookedTask) delete bookedTask.aiTodoDate;
         }
