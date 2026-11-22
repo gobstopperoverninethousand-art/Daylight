@@ -233,8 +233,12 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
       ],
     };
     assert((await request(state, "extras")).body.aiError);
-    output = { taskIds: [], summary: "Invalid omission of the user's choice" };
-    assert.match((await request(state)).body.aiError, /user-selected task was omitted/);
+    output = { taskIds: [], summary: "No additional work recommended." };
+    const omitted = await request(state);
+    assert.equal(omitted.body.aiError, undefined);
+    assert.deepEqual(omitted.body.recommendations.map((entry: any) => entry.taskId), ["pcb-1"]);
+    assert.deepEqual(omitted.body.generatedTasks, []);
+    assert.equal(omitted.body.summary, output.summary);
     const callsBefore = calls;
     state.tasks[0].notes = "The plan changed.";
     assert.equal((await request(state, "extras")).status, 409);

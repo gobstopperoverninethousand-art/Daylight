@@ -422,8 +422,7 @@ export async function POST(req: NextRequest) {
             taskIds: z
               .array(z.string())
               .refine((ids) => new Set(ids).size === ids.length, "Repeated task IDs.")
-              .refine((ids) => ids.every((id) => eligibleIds.has(id)), "Unknown or ineligible task IDs.")
-              .refine((ids) => mode === "extras" || included.every((id) => ids.includes(id)), "A user-selected task was omitted."),
+              .refine((ids) => ids.every((id) => eligibleIds.has(id)), "Unknown or ineligible task IDs."),
           }),
           await callAI(
             mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
@@ -467,7 +466,7 @@ export async function POST(req: NextRequest) {
           ),
         );
         summary = result.summary;
-        taskIds = [...result.taskIds];
+        taskIds = mode === "main" ? [...result.taskIds, ...included] : [...result.taskIds];
         const commitmentKeys = new Set(
           entries.map((entry) => `${entry.kind}:${entry.id}`),
         );
