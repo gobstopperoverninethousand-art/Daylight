@@ -19,6 +19,7 @@ export function useWorkspace() {
     frozen = useRef(false),
     saving = useRef(false),
     epoch = useRef(0),
+    editedAt = useRef(new Date().toISOString()),
     timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const authRef = useRef<AuthSession | null>(null);
   const key = () => `daylight:v1:${modeRef.current}`;
@@ -27,7 +28,7 @@ export function useWorkspace() {
       state: stateRef.current,
       version: version.current,
       dirty: dirty.current,
-      stamp: new Date().toISOString(),
+      stamp: editedAt.current,
     };
     localStorage.setItem(key(), JSON.stringify(cache));
   };
@@ -58,7 +59,7 @@ export function useWorkspace() {
       dirty.current = stateRef.current !== snapshot;
       persist();
       setError("");
-      setStatus(dirty.current ? "Changes pending" : "Saved to cloud");
+      setStatus(dirty.current ? "Changes pending" : "Saved to cloud · " + new Date().toLocaleString());
     } catch (e) {
       if (generation !== epoch.current) return;
       const message =
@@ -66,16 +67,37 @@ export function useWorkspace() {
           ? e.message
           : (e as { message?: string }).message || "Cloud save failed";
       if (message.includes("revision_conflict")) {
-        frozen.current = true;
-        setError(
-          "Newer cloud changes exist. Export your work, then reload the cloud copy.",
-        );
+        const { data: remote, error: readError } = await db
+          .from("daylight_workspaces")
+          .select("document,revision,updated_at")
+          .eq("user_id", authRef.current!.user.id)
+          .single();
+        if (generation !== epoch.current) return;
+        if (readError || !remote) {
+          setError("Could not check the latest cloud copy. Your work is saved in this browser; syncing will retry.");
+          return;
+        }
+        localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({ state: stateRef.current, version: version.current, stamp: editedAt.current }));
+        version.current = Number(remote.revision);
+        if (Date.parse(editedAt.current) <= Date.parse(remote.updated_at)) {
+          const latest = validateReferences(stateSchema.parse(remote.document));
+          stateRef.current = latest;
+          setState(latest);
+          dirty.current = false;
+          persist();
+          setError("");
+          setStatus("Updated from cloud · " + new Date(remote.updated_at).toLocaleString());
+        } else {
+          persist();
+          setError("");
+          setStatus("Syncing latest edits…");
+        }
       } else
         setError(
           "Cloud save failed. Your changes are backed up in this browser. " +
             message,
         );
-      setStatus("Saved locally · cloud pending");
+      if (dirty.current) setStatus("Saved locally · cloud pending");
     } finally {
       saving.current = false;
     }
@@ -112,6 +134,7 @@ export function useWorkspace() {
       }
       let next = cached?.state || emptyState();
       version.current = cached?.version || 0;
+      editedAt.current = cached?.stamp || new Date().toISOString();
       dirty.current = !!cached?.dirty;
       if (mode === "demo") {
         next = cached?.state || demoState();
@@ -120,7 +143,7 @@ export function useWorkspace() {
         try {
           const { data, error } = await browserDb()!
             .from("daylight_workspaces")
-            .select("document,revision")
+            .select("document,revision,updated_at")
             .eq("user_id", session.user.id)
             .maybeSingle();
           if (generation !== epoch.current) return;
@@ -146,11 +169,14 @@ export function useWorkspace() {
                 }),
               );
             } else if (cached?.dirty) {
-              next = cached.state;
-              frozen.current = true;
-              setError(
-                "Local edits and newer cloud changes need review. Export your work, then reload the cloud copy.",
-              );
+              localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify(cached));
+              version.current = Number(data.revision);
+              if (Date.parse(cached.stamp) > Date.parse(data.updated_at)) {
+                next = cached.state;
+              } else {
+                next = remote;
+                dirty.current = false;
+              }
             } else {
               next = remote;
               version.current = data.revision;
@@ -164,7 +190,7 @@ export function useWorkspace() {
               ? "Conflict · local copy"
               : dirty.current
                 ? "Cloud save pending"
-                : "Saved to cloud",
+                : "Saved to cloud · " + (data?.updated_at ? new Date(data.updated_at).toLocaleString() : "just now"),
           );
         } catch (e) {
           if (generation !== epoch.current) return;
@@ -178,6 +204,7 @@ export function useWorkspace() {
       if (generation !== epoch.current) return;
       stateRef.current = next;
       setState(next);
+      if (!frozen.current) persist();
       setReady(true);
     },
     [],
@@ -221,10 +248,20 @@ export function useWorkspace() {
     };
     const storage = (e: StorageEvent) => {
       if (e.key === key() && e.newValue) {
-        frozen.current = true;
-        setError(
-          "Another tab changed this workspace. Export any unsaved work, then reload before editing.",
-        );
+        try {
+          const incoming = JSON.parse(e.newValue) as Cache;
+          if (dirty.current && Date.parse(editedAt.current) > Date.parse(incoming.stamp)) return;
+          localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({state: stateRef.current, version: version.current, stamp: editedAt.current}));
+          const latest = validateReferences(stateSchema.parse(incoming.state));
+          stateRef.current = latest;
+          version.current = incoming.version;
+          editedAt.current = incoming.stamp;
+          dirty.current = incoming.dirty;
+          setState(latest);
+          setStatus(incoming.dirty ? "Cloud save pending" : "Updated from another tab");
+        } catch {
+          setError("Could not read another tab’s update. Your current work is preserved.");
+        }
       }
     };
     window.addEventListener("beforeunload", before);
@@ -242,6 +279,7 @@ export function useWorkspace() {
       const draft = structuredClone(stateRef.current);
       fn(draft);
       const parsed = validateReferences(stateSchema.parse(draft));
+      editedAt.current = new Date().toISOString();
       stateRef.current = parsed;
       dirty.current = true;
       setState(parsed);
