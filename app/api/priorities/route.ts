@@ -33,6 +33,7 @@ import {
   PLANNING_PROMPT_VERSION,
 } from "@/lib/server/planning-prompts";
 import { deadlineEntries } from "@/lib/deadlines";
+import { expireGeneratedTodos } from "@/lib/commitment-context";
 
 function todoTitle(title: string) {
   return title
@@ -149,8 +150,9 @@ export async function POST(req: NextRequest) {
         : [],
     );
 
-    const aliases = todoAliases(state.tasks, new Set(state.sessions.map(session => session.taskId)));
-    const tasks = state.tasks.filter(task => !aliases.has(task.id));
+    const unexpired = expireGeneratedTodos(state, today, minute);
+    const aliases = todoAliases(unexpired, new Set(state.sessions.map(session => session.taskId)));
+    const tasks = unexpired.filter(task => !aliases.has(task.id));
     for (const id of [...mainIds]) { const canonical = aliases.get(id); if (canonical) mainIds.add(canonical); }
     const scheduled = scheduledTaskIds(state);
     const generated = new Map<string, Task>();
@@ -321,7 +323,6 @@ export async function POST(req: NextRequest) {
       (latest, task) => (task.due && task.due > latest ? task.due : latest),
       addDays(today, state.settings.horizon - 1),
     );
-    const dueToday = taskFacts.filter((task) => task.due === today);
     const fallbackIds = () =>
       taskFacts
         .filter((task) => task.tier < 2 && !task.additionalWorkCandidate)
@@ -431,9 +432,7 @@ export async function POST(req: NextRequest) {
               ),
           }),
           await callAI(
-            mode === "extras"
-              ? EXTRA_RECOMMENDATIONS_PROMPT
-              : MAIN_TODO_PROMPT + "\nInclude eligible tasks due today and explain the priorities. State that a task was added only if it is in taskIds or recordedWork.",
+            mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
             input,
           ),
         );
@@ -485,18 +484,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ aiError: error.message });
       }
     }
-    taskIds = [...new Set(mode === "main"
-      ? [...taskIds, ...dueToday.map((task) => task.id)]
-      : taskIds)];
-    if (mode === "main") {
-      const selected = taskIds.map((id) => (generated.get(id) ?? candidatesById.get(id))!.title);
-      let confirmedSelection = selected.length
-        ? `${useLocalFallback ? "Local ranking" : "AI priorities"} selected ${selected.join(", ")}.`
-        : "No unscheduled tasks were selected.";
-      if (dueToday.length)
-        confirmedSelection += " Due today: " + dueToday.map((task) => task.title).join(", ") + ".";
-      summary = confirmedSelection + "\n\n" + summary;
-    }
+    taskIds = [...new Set(taskIds)];
     const recommendations = taskIds.map((taskId) => ({
       taskId,
       reason: "",

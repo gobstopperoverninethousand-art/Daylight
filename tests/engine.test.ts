@@ -1,4 +1,5 @@
 import test from "node:test";
+import { expireGeneratedTodos } from "../lib/commitment-context";
 import assert from "node:assert/strict";
 import {
   emptyState,
@@ -706,6 +707,20 @@ test("sessions cannot spill into the next day without a separate booking", () =>
   s.tasks.push(task());
   s.sessions.push(session("a", { start: "23:30", duration: 60 }));
   assert.equal(stateSchema.safeParse(s).success, false);
+});
+
+test("AI task cleanup starts at 9am next day and preserves completion and session history", () => {
+  const s = state();
+  s.tasks.push(
+    task("ai", { aiTodoDate: day }),
+    task("done", { aiTodoDate: day, status: "completed" }),
+    task("booked", { aiTodoDate: day }),
+    task("manual"),
+  );
+  s.sessions.push(session("booking", { taskId: "booked" }));
+  assert.equal(expireGeneratedTodos(s, addDays(day, 1), 539).length, 4);
+  assert.deepEqual(expireGeneratedTodos(s, addDays(day, 1), 540).map((task) => task.id), ["done", "booked", "manual"]);
+  assert.equal(expireGeneratedTodos(s, addDays(day, 2), 0).length, 3);
 });
 
 test("commitment evidence follows linked sessions and excludes unrelated work", () => {

@@ -26,6 +26,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useWorkspace } from "@/lib/use-workspace";
+import { expireGeneratedTodos } from "@/lib/commitment-context";
 import {
   State,
   Outcome,
@@ -222,15 +223,28 @@ export default function Daylight() {
 
   useEffect(() => {
     if (!ready || mode === "demo") return;
-    // Re-evaluate date-sensitive freshness without changing saved AI output.
-    const tick = () => setFreshnessTick((value) => value + 1);
+    const tick = () => {
+      setFreshnessTick((value) => value + 1);
+      const current = latestState.current;
+      const { day, minute } = zonedParts(new Date().toISOString(), current.settings.timezone);
+      if (expireGeneratedTodos(current, day, minute).length === current.tasks.length) return;
+      if (!workspace.canSyncCalendar()) return;
+      try {
+        update((draft) => {
+          draft.tasks = expireGeneratedTodos(draft, day, minute);
+        });
+      } catch {
+        // Retry cleanup on the next tick after the workspace recovers.
+      }
+    };
+    tick();
     const timer = window.setInterval(tick, 30_000);
     window.addEventListener("focus", tick);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", tick);
     };
-  }, [ready, mode]);
+  }, [ready, mode, update]);
 
   const savedPriorityRun = state.aiRuns.findLast(
     (run) => run.kind === "priorities",
@@ -768,7 +782,7 @@ export default function Daylight() {
       }
       const generated = taskSchema.array().parse(result.generatedTasks ?? []);
       update((s) => {
-        const { day } = zonedParts(
+        const { day, minute } = zonedParts(
           new Date().toISOString(),
           s.settings.timezone,
         );
@@ -779,6 +793,7 @@ export default function Daylight() {
           throw new Error(
             "Your plan changed while refreshing. Refresh to update the to-do bank.",
           );
+        s.tasks = expireGeneratedTodos(s, day, minute);
         const scheduledTaskIds = new Set(
           s.sessions.map((session) => session.taskId),
         );

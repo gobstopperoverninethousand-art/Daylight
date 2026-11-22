@@ -165,7 +165,7 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
     );
     assert.match(
       sent.systemInstruction.parts[0].text,
-      /Daylight main to-do list/,
+      /Integrated AI’s Prompt\n\nTo-Do List\n\nDetailed AI rules/,
     );
     assert.match(
       sent.systemInstruction.parts[0].text,
@@ -239,13 +239,12 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
     const today = workspaceDay(state);
     state.deadlines.push({ ...state.deadlines[0], id: "practice-log", title: "Practice Log", date: today });
     state.tasks.push({ ...state.tasks[0], id: "carried", title: "Carry over work", includeDate: null, aiTodoDate: addDays(today, -3) });
-    output = { taskIds: ["pcb-1", "carried"], summary: "Continue the prototype while it fits your schedule." };
+    output = { taskIds: ["pcb-1"], summary: "Continue the prototype while it fits your schedule." };
     const refreshed = (await request(state)).body;
     assert.equal(refreshed.aiError, undefined);
-    assert.ok(refreshed.recommendations.some((entry: { taskId: string }) => entry.taskId === "carried"));
-    assert.equal(refreshed.generatedTasks[0].title, "Practice Log");
-    assert.match(refreshed.summary, /Due today: Practice Log/);
-    assert.match(refreshed.summary, /Continue the prototype/);
+    assert.ok(!refreshed.recommendations.some((entry: { taskId: string }) => entry.taskId === "carried"));
+    assert.deepEqual(refreshed.generatedTasks, []);
+    assert.equal(refreshed.summary, output.summary);
   } finally {
     globalThis.fetch = fetch;
     keys.forEach((key, index) => {
