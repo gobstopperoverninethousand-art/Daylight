@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { Dialog, Field } from "./ui";
 import { type State, type Review, uid, audit, formatDate } from "@/lib/model";
 import { workspaceDay } from "@/lib/ai-freshness";
@@ -49,41 +49,30 @@ export function DailyReviewDialog({
   const source = JSON.stringify({ date, updates });
   const [overviewSource, setOverviewSource] = useState("");
   const [overviewError, setOverviewError] = useState("");
-  const [retry, setRetry] = useState(0);
-  const apiRef = useRef(api);
-  apiRef.current = api;
-  const stateRef = useRef(state);
-  stateRef.current = state;
   const overviewCurrent = overviewSource === source;
-  useEffect(() => {
-    if (step !== 1 || overviewSource === source) return;
-    let cancelled = false;
+  async function refreshOverview() {
+    if (busy) return;
     setOverviewError("");
     if (!updates.length || updates.some((update) => !update.note.trim()))
       return;
-    const timer = setTimeout(async () => {
+    setBusy(true);
       try {
         const result = aiReady
-          ? await apiRef.current("/api/review", {
+          ? await api("/api/review", {
               mode: "overview",
-              state: stateRef.current,
+              state,
               date,
               updates,
             })
           : { overview: updates.map((update) => update.note.trim()).join(" ") };
-        if (!cancelled) {
           setInterpretation(result.overview);
           setOverviewSource(source);
-        }
       } catch (error) {
-        if (!cancelled) setOverviewError((error as Error).message);
+        setOverviewError((error as Error).message);
+      } finally {
+        setBusy(false);
       }
-    }, 3000);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [source, step, aiReady, retry, overviewSource]);
+  }
   async function interpret(refine = false) {
     setBusy(true);
     setError("");
@@ -130,7 +119,7 @@ export function DailyReviewDialog({
     setError("");
     try {
       if (!overviewCurrent)
-        throw Error("Wait for the overview to update before saving.");
+        throw Error("Refresh the overview to include your edited sections before saving.");
       const expected = confirmReviewReplacement(state, date);
       if (expected === null) return;
       const account = updates.map((u) => u.note.trim()).join("\n\n");
@@ -352,24 +341,29 @@ export function DailyReviewDialog({
             >
               {overviewCurrent
                 ? "✓ Overview up to date"
-                : "◷ Updating overview"}
+                : "Needs refresh · sections have changed"}
             </p>
             <p className="progress-overview" style={{ whiteSpace: "pre-wrap" }}>
-              {overviewCurrent
-                ? interpretation
-                : "Updating overview from your edited sections…"}
+              {interpretation}
             </p>
           </Field>
           <p className="form-hint">
-            Edit your update sections once; the overview refreshes
-            automatically. It saves only to daily and weekly reports.
+            The overview refreshes only when you ask. It saves only to daily and weekly reports.
           </p>
+          <button
+            className="button secondary small"
+            disabled={busy || overviewCurrent || !updates.length || updates.some((update) => !update.note.trim())}
+            onClick={() => void refreshOverview()}
+          >
+            {busy ? "Working…" : "Refresh overview"}
+          </button>
           {overviewError && (
             <p className="error" role="alert">
               {overviewError}{" "}
               <button
                 className="button secondary small"
-                onClick={() => setRetry((value) => value + 1)}
+                disabled={busy}
+                onClick={() => void refreshOverview()}
               >
                 Retry overview
               </button>

@@ -150,6 +150,7 @@ export default function Daylight() {
     date: string;
   } | null>(null);
   const [reviewDate, setReviewDate] = useState<string>();
+  const [, setFreshnessTick] = useState(0);
   const reviewedReminder = useRef("");
   const reminderKey = "daylight:review-reminder:" + mode;
   useEffect(() => {
@@ -221,33 +222,15 @@ export default function Daylight() {
 
   useEffect(() => {
     if (!ready || mode === "demo") return;
-    function expire() {
-      const current = latestState.current;
-      const { day, minute } = zonedParts(
-        new Date().toISOString(),
-        current.settings.timezone,
-      );
-      if (
-        expireGeneratedTodos(current, day, minute).length ===
-        current.tasks.length
-      )
-        return;
-      try {
-        update((draft) => {
-          draft.tasks = expireGeneratedTodos(draft, day, minute);
-        });
-      } catch {
-        // A frozen workspace can be cleaned up after it is reopened.
-      }
-    }
-    expire();
-    const timer = window.setInterval(expire, 10_000);
-    window.addEventListener("focus", expire);
+    // Re-evaluate date-sensitive freshness without changing saved AI output.
+    const tick = () => setFreshnessTick((value) => value + 1);
+    const timer = window.setInterval(tick, 30_000);
+    window.addEventListener("focus", tick);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("focus", expire);
+      window.removeEventListener("focus", tick);
     };
-  }, [ready, mode, update, state.tasks, state.sessions]);
+  }, [ready, mode]);
 
   const savedPriorityRun = state.aiRuns.findLast(
     (run) => run.kind === "priorities",
