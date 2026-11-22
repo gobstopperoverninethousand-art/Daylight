@@ -66,7 +66,8 @@ test("Gemini keeps credentials server-side and rejects incomplete or invalid ass
           },
         ],
       };
-      await assert.rejects(callAI("Return JSON", input), /complete assessment/);
+      await assert.rejects(callAI("Return JSON", input),
+        finishReason === "MAX_TOKENS" ? /response length limit/ : /complete assessment/);
     }
     payload = { promptFeedback: { blockReason: "SAFETY" } };
     await assert.rejects(callAI("Return JSON", input), /complete assessment/);

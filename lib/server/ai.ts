@@ -207,6 +207,8 @@ async function attempt(
       thoughts: json.usageMetadata?.thoughtsTokenCount,
     }),
   );
+  if (candidate?.finishReason === "MAX_TOKENS")
+    throw new HttpError("Gemini reached the response length limit before finishing. Your previous result is preserved.", 502);
   if (json.promptFeedback?.blockReason || candidate?.finishReason !== "STOP")
     throw new HttpError(
       "Google Gemini did not return a complete assessment. No assessment was saved.",
@@ -235,6 +237,7 @@ export async function callAI(
   instruction: string,
   input: unknown,
   responseJsonSchema?: Record<string, unknown>,
+  maxOutputTokens = 8192,
 ): Promise<unknown> {
   const { key, model } = aiCredentials();
   const body = JSON.stringify({
@@ -246,7 +249,7 @@ export async function callAI(
       responseMimeType: "application/json",
       responseJsonSchema,
       // Caps a runaway answer. Normal results are far shorter.
-      maxOutputTokens: 8192,
+      maxOutputTokens,
       // Gemini 3 models reason at "medium" by default, which is slow for these
       // small structured tasks.
       ...(/^gemini-3/.test(model)

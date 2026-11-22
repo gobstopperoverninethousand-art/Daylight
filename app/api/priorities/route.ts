@@ -463,6 +463,7 @@ export async function POST(req: NextRequest) {
                 },
               },
             },
+            16384,
           ),
         );
         summary = result.summary;
