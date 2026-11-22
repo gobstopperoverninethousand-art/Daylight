@@ -4,6 +4,7 @@ import type { Session as AuthSession } from "@supabase/supabase-js";
 import { State, stateSchema, emptyState, validateReferences } from "./model";
 import { demoState } from "./demo";
 import { browserDb } from "./supabase";
+import { archiveRecoveryCopy, migrateRecoveryCopies } from "./workspace-recovery";
 type Cache = { state: State; version: number; dirty: boolean; stamp: string };
 export function useWorkspace() {
   const [state, setState] = useState<State>(emptyState),
@@ -77,15 +78,17 @@ export function useWorkspace() {
           if (generation !== epoch.current) return;
           if (readError) throw readError;
           const latest = validateReferences(stateSchema.parse(remote.document));
-          localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({ state: stateRef.current, version: version.current, stamp: editedAt.current }));
-          version.current = Number(remote.revision);
           if (Date.parse(editedAt.current) <= Date.parse(remote.updated_at)) {
+            const local = stateRef.current;
+            await archiveRecoveryCopy(key(), JSON.stringify({ state: local, version: version.current, stamp: editedAt.current }));
+            if (generation !== epoch.current || stateRef.current !== local) return;
             stateRef.current = latest;
             editedAt.current = remote.updated_at;
             setState(latest);
             dirty.current = false;
             setStatus("Updated from cloud · " + new Date(remote.updated_at).toLocaleString());
           }
+          version.current = Number(remote.revision);
           persist();
           setError("");
         } catch (error) {
@@ -118,6 +121,12 @@ export function useWorkspace() {
       dirty.current = false;
       version.current = 0;
       let cached: Cache | null = null;
+      try {
+        await migrateRecoveryCopies();
+      } catch {
+        // Older backups stay in place if the browser cannot archive them.
+      }
+      if (generation !== epoch.current) return;
       try {
         const raw = localStorage.getItem(key());
         if (raw) {
@@ -160,24 +169,16 @@ export function useWorkspace() {
               next = remote;
               version.current = data.revision;
               dirty.current = false;
-              localStorage.setItem(
-                key(),
-                JSON.stringify({
-                  state: remote,
-                  version: data.revision,
-                  dirty: false,
-                  stamp: new Date().toISOString(),
-                }),
-              );
             } else if (cached?.dirty) {
-              localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify(cached));
-              version.current = Number(data.revision);
               if (Date.parse(cached.stamp) > Date.parse(data.updated_at)) {
                 next = cached.state;
               } else {
+                await archiveRecoveryCopy(key(), JSON.stringify(cached));
+                if (generation !== epoch.current) return;
                 next = remote;
                 dirty.current = false;
               }
+              version.current = Number(data.revision);
             } else {
               next = remote;
               version.current = data.revision;
@@ -308,14 +309,20 @@ export function useWorkspace() {
         e.preventDefault();
       }
     };
-    const storage = (e: StorageEvent) => {
+    const storage = async (e: StorageEvent) => {
       if (e.key === key() && e.newValue) {
         try {
           const incoming = JSON.parse(e.newValue) as Cache;
           if (incoming.version < version.current && authRef.current?.user.id === modeRef.current) return;
           if (dirty.current && Date.parse(editedAt.current) > Date.parse(incoming.stamp)) return;
-          localStorage.setItem("daylight:recovery:" + Date.now(), JSON.stringify({state: stateRef.current, version: version.current, stamp: editedAt.current}));
           const latest = validateReferences(stateSchema.parse(incoming.state));
+          if (dirty.current) {
+            const local = stateRef.current;
+            const generation = epoch.current;
+            await archiveRecoveryCopy(key(), JSON.stringify({ state: local, version: version.current, stamp: editedAt.current }));
+            if (!active || generation !== epoch.current || stateRef.current !== local ||
+                localStorage.getItem(e.key!) !== e.newValue) return;
+          }
           stateRef.current = latest;
           version.current = incoming.version;
           editedAt.current = incoming.stamp;
@@ -374,8 +381,14 @@ export function useWorkspace() {
       return;
     }
     const recovery = localStorage.getItem(key());
-    if (recovery)
-      localStorage.setItem("daylight:recovery:" + Date.now(), recovery);
+    if (recovery) {
+      try {
+        await archiveRecoveryCopy(key(), recovery);
+      } catch {
+        setError("Could not archive this browser’s copy. Export a backup before reloading.");
+        return;
+      }
+    }
     localStorage.removeItem(key());
     await load(authRef.current);
   };
