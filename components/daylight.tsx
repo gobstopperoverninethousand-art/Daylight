@@ -115,6 +115,7 @@ export default function Daylight() {
     [quick, setQuick] = useState(false),
     [health, setHealth] = useState<Health | null>(null),
     [busy, setBusy] = useState(false),
+    [prioritiesRefreshing, setPrioritiesRefreshing] = useState(false),
     [search, setSearch] = useState<string | null>(null),
     [conflicts, setConflicts] = useState<
       { title: string; reason: string; url?: string }[] | null
@@ -744,6 +745,7 @@ export default function Daylight() {
   }
   async function requestPriorities() {
     if (busy) return;
+    setPrioritiesRefreshing(true);
     setBusy(true);
     notify("Asking Gemini for priorities. This can take up to a minute.");
     try {
@@ -806,6 +808,7 @@ export default function Daylight() {
     } catch (e) {
       notify((e as Error).message);
     } finally {
+      setPrioritiesRefreshing(false);
       setBusy(false);
     }
   }
@@ -1365,6 +1368,7 @@ export default function Daylight() {
               aiReady={aiReady}
               aiNeedsSignIn={!!health?.aiConfigured && !auth && mode !== "demo"}
               aiBusy={busy}
+              prioritiesRefreshing={prioritiesRefreshing}
               requestPriorities={requestPriorities}
               aiPriorities={aiPriorities}
               aiExtras={aiExtras}

@@ -197,6 +197,7 @@ export function Planner({
   aiReady,
   aiNeedsSignIn,
   aiBusy,
+  prioritiesRefreshing,
   requestPriorities,
   aiPriorities,
   aiExtras,
@@ -241,6 +242,7 @@ export function Planner({
   aiReady: boolean;
   aiNeedsSignIn: boolean;
   aiBusy: boolean;
+  prioritiesRefreshing: boolean;
   requestPriorities: () => void;
   requestExtras: () => void;
   addExtraToToday: (task: State["tasks"][number]) => void;
@@ -715,7 +717,7 @@ export function Planner({
               requestPriorities();
             }}
           >
-            {aiBusy ? "Refreshing…" : "Refresh AI to-do list"}
+            {prioritiesRefreshing ? "Refreshing…" : "Refresh AI to-do list"}
           </button>
         </section>
       )}
