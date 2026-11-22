@@ -13,6 +13,7 @@ import {
   clockTime,
   audit,
   finishTask,
+  recordSessionOutcome,
   removeTask,
   removeProject,
   routineStart,
@@ -296,6 +297,7 @@ export function Editor({
           const idx = s.sessions.findIndex((x) => x.id === recordId);
           if (idx >= 0) s.sessions[idx] = value;
           else s.sessions.push(value);
+          recordSessionOutcome(s, recordId, value.outcome);
           const bookedTask = s.tasks.find((task) => task.id === value.taskId);
           if (bookedTask) delete bookedTask.aiTodoDate;
         }
@@ -317,7 +319,9 @@ export function Editor({
       });
       onSaved(
         type === "session"
-          ? "Session saved. Task completion is tracked separately."
+          ? str("outcome") === "completed"
+            ? "Task finished. Deadline completion is tracked separately."
+            : "Session saved."
           : type === "milestone"
             ? "Milestone saved."
             : `${type[0].toUpperCase() + type.slice(1)} saved.`,

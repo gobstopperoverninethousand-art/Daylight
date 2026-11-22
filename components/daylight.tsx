@@ -39,6 +39,7 @@ import {
   assessmentSchema,
   stateSchema,
   taskSchema,
+  recordSessionOutcome,
 } from "@/lib/model";
 import { Editor, EditorState } from "./editor";
 import { Planner } from "./calendar";
@@ -1014,11 +1015,7 @@ export default function Daylight() {
   function setOutcome(kind: string, id: string, date: string, value: Outcome) {
     change((s) => {
       if (kind === "session") {
-        const session = s.sessions.find((x) => x.id === id);
-        if (session) {
-          session.outcome = value;
-          if (value !== "pending") session.needsReview = false;
-        }
+        recordSessionOutcome(s, id, value);
       } else {
         const rec = s.routineRecords.find(
           (x) => x.routineId === id && x.date === date,
@@ -1038,7 +1035,9 @@ export default function Daylight() {
       value === "pending"
         ? "Outcome reset."
         : kind === "session"
-          ? "Session outcome saved. Task status is unchanged."
+          ? value === "completed"
+            ? "Task finished. Deadline completion is tracked separately."
+            : "Session outcome saved."
           : "Routine outcome saved.",
     );
   }

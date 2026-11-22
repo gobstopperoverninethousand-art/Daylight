@@ -6,6 +6,7 @@ import {
   Task,
   Session,
   finishTask,
+  recordSessionOutcome,
   removeTask,
   stateSchema,
   validateReferences,
@@ -269,6 +270,29 @@ test("deadline stays a marker separate from scheduled sessions", () => {
     events.find((e) => e.key.startsWith("deadline"))?.event.start?.date,
     day,
   );
+});
+test("completing a session finishes its task even below its estimated time", () => {
+  const s = state();
+  deadline(s);
+  s.sessions.push(session("a", { actualMinutes: 45 }), session("b"));
+  recordSessionOutcome(s, "a", "completed");
+  assert.equal(s.tasks[0].status, "completed");
+  assert.ok(s.tasks[0].completedAt);
+  assert.equal(s.sessions[0].actualMinutes, 45);
+  assert.equal(s.sessions[1].needsReview, true);
+  assert.equal(s.deadlines[0].status, "active");
+  assert.equal(recommendations(s, day, now).length, 0);
+});
+test("partial outcomes keep the task and its remaining estimate active", () => {
+  for (const outcome of ["partial-low", "partial-medium", "partial-high"] as const) {
+    const s = state();
+    s.tasks.push(task());
+    s.sessions.push(session());
+    recordSessionOutcome(s, "session-1", outcome);
+    assert.equal(s.tasks[0].status, "active");
+    assert.equal(s.tasks[0].remaining, 90);
+    assert.equal(s.sessions[0].outcome, outcome);
+  }
 });
 test("independent sessions remain independent and finishing task preserves history", () => {
   const s = state();
