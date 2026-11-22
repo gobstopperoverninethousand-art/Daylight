@@ -428,6 +428,42 @@ export async function POST(req: NextRequest) {
           await callAI(
             mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
             input,
+            {
+              type: "object",
+              required: ["taskIds", "summary", "recordedWork", "decisionMemory"],
+              properties: {
+                taskIds: {
+                  type: "array",
+                  ...(eligible.length
+                    ? { items: { type: "string", enum: eligible } }
+                    : { items: { type: "string" }, maxItems: 0 }),
+                },
+                summary: { type: "string" },
+                recordedWork: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      sourceTaskId: { type: "string" },
+                      title: { type: "string" },
+                      evidenceQuote: { type: "string" },
+                    },
+                    required: ["sourceTaskId", "title", "evidenceQuote"],
+                  },
+                },
+                decisionMemory: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      commitment: { type: "string" },
+                      rationale: { type: "string" },
+                    },
+                    required: ["commitment", "rationale"],
+                  },
+                },
+              },
+            },
           ),
         );
         summary = result.summary;

@@ -234,6 +234,7 @@ async function attempt(
 export async function callAI(
   instruction: string,
   input: unknown,
+  responseJsonSchema?: Record<string, unknown>,
 ): Promise<unknown> {
   const { key, model } = aiCredentials();
   const body = JSON.stringify({
@@ -243,6 +244,7 @@ export async function callAI(
     ],
     generationConfig: {
       responseMimeType: "application/json",
+      responseJsonSchema,
       // Caps a runaway answer. Normal results are far shorter.
       maxOutputTokens: 8192,
       // Gemini 3 models reason at "medium" by default, which is slow for these

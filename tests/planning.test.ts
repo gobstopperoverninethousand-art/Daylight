@@ -152,8 +152,10 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
     };
     const main = await request(state);
     assert.equal(main.status, 200);
+    const input = JSON.parse(sent.contents[0].parts[0].text.slice("INPUT\n".length));
+    assert.deepEqual(sent.generationConfig.responseJsonSchema.properties.taskIds.items.enum,
+      input.eligible_tasks.map((task: { id: string }) => task.id));
     assert.equal(main.body.aiError, undefined);
-    const input = JSON.parse(sent.contents[0].parts[0].text.slice(6));
     assert.equal(
       input.task_history.find((task: any) => task.id === "reading").sessions[0]
         .note,
