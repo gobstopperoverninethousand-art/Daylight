@@ -120,8 +120,35 @@ function TaskCard({
     </article>
   );
 }
-function layout(blocks: Block[]) {
-  const result: { block: Block; lane: number; lanes: number }[] = [];
+const blockTop = (start: number) => (start / 60) * 64 + 2;
+const blockHeight = (duration: number) =>
+  Math.max(27, (duration / 60) * 64 - 2);
+const blockBottom = (block: Block) =>
+  blockTop(block.start) + blockHeight(block.duration);
+
+function layout(blocks: Block[], overlapView: "stacked" | "sideBySide") {
+  const sorted = [...blocks].sort((a, b) => a.start - b.start);
+  const overlapping = new Set<string>();
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      if (blockTop(sorted[j].start) >= blockBottom(sorted[i])) break;
+      overlapping.add(sorted[i].id);
+      overlapping.add(sorted[j].id);
+    }
+  }
+  if (overlapView === "stacked")
+    return sorted.map((block) => ({
+      block,
+      lane: 0,
+      lanes: 1,
+      overlapped: overlapping.has(block.id),
+    }));
+  const result: {
+    block: Block;
+    lane: number;
+    lanes: number;
+    overlapped: boolean;
+  }[] = [];
   let group: typeof result = [];
   let end = -1;
   const flush = () => {
@@ -132,20 +159,22 @@ function layout(blocks: Block[]) {
     });
     group = [];
   };
-  for (const block of blocks) {
-    if (block.start >= end) {
+  for (const block of sorted) {
+    const top = blockTop(block.start);
+    const bottom = blockBottom(block);
+    if (top >= end) {
       flush();
-      end = block.start + block.duration;
-    } else end = Math.max(end, block.start + block.duration);
+      end = bottom;
+    } else end = Math.max(end, bottom);
     let lane = 0;
-    while (
-      group.some(
-        (x) =>
-          x.lane === lane && x.block.start + x.block.duration > block.start,
-      )
-    )
+    while (group.some((x) => x.lane === lane && blockBottom(x.block) > top))
       lane++;
-    group.push({ block, lane, lanes: 1 });
+    group.push({
+      block,
+      lane,
+      lanes: 1,
+      overlapped: overlapping.has(block.id),
+    });
   }
   flush();
   return result;
@@ -170,6 +199,10 @@ export function Planner({
   aiBusy,
   requestPriorities,
   aiPriorities,
+  aiExtras,
+  requestExtras,
+  addExtraToToday,
+  setOverlapView,
 }: {
   state: State;
   date: string;
@@ -209,12 +242,22 @@ export function Planner({
   aiNeedsSignIn: boolean;
   aiBusy: boolean;
   requestPriorities: () => void;
+  requestExtras: () => void;
+  addExtraToToday: (task: State["tasks"][number]) => void;
+  aiExtras: {
+    summary: string;
+    recommendations: { taskId: string; reason: string }[];
+    generatedTasks?: State["tasks"];
+    stale: boolean;
+    createdAt: string;
+  } | null;
   aiPriorities: {
     summary: string;
     recommendations: { taskId: string; reason: string }[];
     stale: boolean;
     createdAt: string;
   } | null;
+  setOverlapView: (view: "stacked" | "sideBySide") => void;
 }) {
   const [view, setView] = useState<CalendarView>("Week"),
     [bank, setBank] = useState<"recommended" | "unscheduled" | "active">(
@@ -273,6 +316,43 @@ export function Planner({
           ),
         ]
       : suggested;
+  const mainTaskIds = new Set(
+    aiPriorities?.recommendations.map((item) => item.taskId),
+  );
+  const extraTasks =
+    aiExtras?.recommendations.flatMap(({ taskId }) => {
+      const task =
+        state.tasks.find((item) => item.id === taskId) ??
+        aiExtras.generatedTasks?.find((item) => item.id === taskId);
+      if (
+        !task ||
+        task.status !== "active" ||
+        task.deletedProject ||
+        scheduled.has(taskId) ||
+        mainTaskIds.has(taskId) ||
+        task.includeDate === today
+      )
+        return [];
+      if (
+        task.projectId &&
+        !state.projects.some(
+          (project) =>
+            project.id === task.projectId && project.status === "active",
+        )
+      )
+        return [];
+      if (
+        task.deadlineId &&
+        !state.deadlines.some(
+          (deadline) =>
+            deadline.id === task.deadlineId &&
+            deadline.status === "active" &&
+            !deadline.deletedProject,
+        )
+      )
+        return [];
+      return [task];
+    }) ?? [];
   const yearly = view === "Year" || view === "Year Columns";
   const start = addDays(date, -weekday(date));
   const dates =
@@ -713,16 +793,16 @@ export function Planner({
             {tasks.length ? (
               <div className="todo-list">
                 {tasks.map(({ task, reason }) => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      reason={reason}
-                      onEdit={() => edit({ kind: "task", id: task.id })}
-                      onSchedule={() =>
-                        edit({ kind: "session", taskId: task.id, date })
-                      }
-                    />
-                  ))}
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    reason={reason}
+                    onEdit={() => edit({ kind: "task", id: task.id })}
+                    onSchedule={() =>
+                      edit({ kind: "session", taskId: task.id, date })
+                    }
+                  />
+                ))}
               </div>
             ) : (
               <p className="todo-empty">
@@ -759,17 +839,49 @@ export function Planner({
                 Today
               </button>
             </div>
-            <div className="view-switch" aria-label="Calendar view">
-              {calendarViews.map((v) => (
+            <div className="calendar-toolbar-controls">
+              <div
+                className="overlap-switch"
+                aria-label="Overlapping block layout"
+              >
+                <span>Overlap</span>
                 <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={view === v ? "active" : ""}
-                  aria-pressed={view === v}
+                  className={
+                    state.settings.blockOverlapView === "stacked"
+                      ? "active"
+                      : ""
+                  }
+                  aria-pressed={state.settings.blockOverlapView === "stacked"}
+                  onClick={() => setOverlapView("stacked")}
                 >
-                  {v}
+                  Stacked
                 </button>
-              ))}
+                <button
+                  className={
+                    state.settings.blockOverlapView === "sideBySide"
+                      ? "active"
+                      : ""
+                  }
+                  aria-pressed={
+                    state.settings.blockOverlapView === "sideBySide"
+                  }
+                  onClick={() => setOverlapView("sideBySide")}
+                >
+                  Side by side
+                </button>
+              </div>
+              <div className="view-switch" aria-label="Calendar view">
+                {calendarViews.map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={view === v ? "active" : ""}
+                    aria-pressed={view === v}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           {view === "Day" || view === "Week" ? (
@@ -850,17 +962,25 @@ export function Planner({
                         .filter(
                           (x) =>
                             x.date === d &&
-                            (x.status === "active" || !!x.deletedProject) &&
-                            !overridden.has((x.historicalKind ?? "deadline") + ":" + x.id),
+                            (x.status === "active" ||
+                              x.status === "resolved" ||
+                              !!x.deletedProject) &&
+                            !overridden.has(
+                              (x.historicalKind ?? "deadline") + ":" + x.id,
+                            ),
                         )
                         .map((x) => (
                           <button
-                            className="deadline-chip"
+                            className={`deadline-chip ${x.status === "resolved" ? "deadline-completed" : ""}`}
                             key={x.id}
                             onClick={() => edit({ kind: "deadline", id: x.id })}
                           >
                             <span />
-                            {x.historicalKind === "milestone" ? "Milestone" : "Due"} · {x.title}
+                            {x.status === "resolved" ? "✓ " : ""}
+                            {x.historicalKind === "milestone"
+                              ? "Milestone"
+                              : "Due"}{" "}
+                            · {x.title}
                           </button>
                         ))}
                       {state.projects.flatMap((p) =>
@@ -868,13 +988,12 @@ export function Planner({
                           .filter(
                             (m) =>
                               m.approved &&
-                              !m.completed &&
                               m.date === d &&
                               !overridden.has("milestone:" + m.id),
                           )
                           .map((m) => (
                             <button
-                              className="deadline-chip lavender-text"
+                              className={`deadline-chip lavender-text ${m.completed ? "deadline-completed" : ""}`}
                               key={m.id}
                               onClick={() =>
                                 edit({
@@ -884,24 +1003,25 @@ export function Planner({
                                 })
                               }
                             >
-                              ◇ {m.title}
+                              {m.completed ? "✓ " : "◇ "}
+                              {m.title}
                             </button>
                           )),
                       )}
                       {state.projects
                         .filter(
                           (p) =>
-                            p.status === "active" &&
                             p.deadline === d &&
                             !overridden.has("project:" + p.id),
                         )
                         .map((p) => (
                           <button
-                            className="deadline-chip lavender-text"
+                            className={`deadline-chip lavender-text ${p.status === "completed" ? "deadline-completed" : ""}`}
                             key={p.id}
                             onClick={() => edit({ kind: "project", id: p.id })}
                           >
-                            Due · {p.title}
+                            {p.status === "completed" ? "✓ " : ""}Due ·{" "}
+                            {p.title}
                           </button>
                         ))}
                       {blocks
@@ -1118,119 +1238,114 @@ export function Planner({
                             </div>
                           ))}
                         </div>
-                        {layout(blocks.filter((b) => !b.allDay)).map(
-                          ({ block: b, lane, lanes }) => (
-                            <div
-                              key={b.id}
-                              className={`calendar-block ${b.color} ${b.kind === "session" ? "session-block" : ""} ${sessionPreview?.id === b.id ? "session-adjusting" : ""} ${b.outcome === "completed" ? "done" : ""} ${b.outcome === "skipped" ? "skipped" : ""} ${b.duration < 35 ? "short-block" : ""}`}
-                              style={{
-                                top: (b.start / 60) * 64 + 2,
-                                height: Math.max(
-                                  27,
-                                  (b.duration / 60) * 64 - 4,
-                                ),
-                                left: `calc(${(lane / lanes) * 100}% + 4px)`,
-                                width: `calc(${100 / lanes}% - 8px)`,
-                              }}
-                              draggable={
-                                b.kind === "session" ||
-                                b.kind === "routine" ||
-                                editableEvents.has(b.sourceId)
-                              }
-                              onDragStart={(e) => {
-                                if (b.kind === "session")
-                                  startSessionDrag(e, b.id);
-                                else if (b.kind === "routine")
-                                  dragRoutine(e, b.sourceId, d);
-                                else if (editableEvents.has(b.sourceId))
-                                  dragGoogleEvent(e, b.sourceId);
-                              }}
-                              onDragEnd={
-                                b.kind === "session"
-                                  ? endSessionDrag
-                                  : undefined
+                        {layout(
+                          blocks.filter((b) => !b.allDay),
+                          state.settings.blockOverlapView,
+                        ).map(({ block: b, lane, lanes, overlapped }) => (
+                          <div
+                            key={b.id}
+                            className={`calendar-block ${b.color} ${overlapped ? "overlapping-block" : ""} ${overlapped && state.settings.blockOverlapView === "stacked" ? "stacked-overlap" : ""} ${b.kind === "session" ? "session-block" : ""} ${sessionPreview?.id === b.id ? "session-adjusting" : ""} ${b.outcome === "completed" ? "done" : ""} ${b.outcome === "skipped" ? "skipped" : ""} ${b.duration < 35 ? "short-block" : ""}`}
+                            style={{
+                              top: blockTop(b.start),
+                              height: blockHeight(b.duration),
+                              left: `calc(${(lane / lanes) * 100}% + 4px)`,
+                              width: `calc(${100 / lanes}% - 8px)`,
+                            }}
+                            draggable={
+                              b.kind === "session" ||
+                              b.kind === "routine" ||
+                              editableEvents.has(b.sourceId)
+                            }
+                            onDragStart={(e) => {
+                              if (b.kind === "session")
+                                startSessionDrag(e, b.id);
+                              else if (b.kind === "routine")
+                                dragRoutine(e, b.sourceId, d);
+                              else if (editableEvents.has(b.sourceId))
+                                dragGoogleEvent(e, b.sourceId);
+                            }}
+                            onDragEnd={
+                              b.kind === "session" ? endSessionDrag : undefined
+                            }
+                          >
+                            <button
+                              className="block-content"
+                              title={`${b.title} · ${displayTime(clockTime(b.start))} · ${durationLabel(b.duration)}`}
+                              aria-label={`${b.title} · ${displayTime(clockTime(b.start))} · ${durationLabel(b.duration)}`}
+                              onClick={() =>
+                                b.kind === "external"
+                                  ? openGoogleEvent(b.sourceId)
+                                  : edit(
+                                      b.kind === "routine"
+                                        ? {
+                                            kind: "occurrence",
+                                            id: b.sourceId,
+                                            date: d,
+                                          }
+                                        : { kind: "session", id: b.id },
+                                    )
                               }
                             >
-                              <button
-                                className="block-content"
-                                title={`${b.title} · ${displayTime(clockTime(b.start))} · ${durationLabel(b.duration)}`}
-                                onClick={() =>
-                                  b.kind === "external"
-                                    ? openGoogleEvent(b.sourceId)
-                                    : edit(
-                                        b.kind === "routine"
-                                          ? {
-                                              kind: "occurrence",
-                                              id: b.sourceId,
-                                              date: d,
-                                            }
-                                          : { kind: "session", id: b.id },
-                                      )
-                                }
-                              >
-                                <span className="block-title">
-                                  {b.kind === "routine" && (
-                                    <Repeat2 size={11} />
-                                  )}{" "}
-                                  {b.outcome === "completed" && (
-                                    <Check size={11} />
-                                  )}{" "}
-                                  {b.title}
-                                </span>
-                                <span className="block-time">
-                                  {displayTime(clockTime(b.start))} –{" "}
-                                  {b.start + b.duration === 1440
-                                    ? "12am"
-                                    : displayTime(
-                                        clockTime(b.start + b.duration),
-                                      )}
-                                  {b.needsReview ? " · Review" : ""}
-                                </span>
-                              </button>
-                              {b.kind !== "external" && (
-                                <div className="block-controls">
-                                  <button
-                                    aria-label={`Mark ${b.title} ${b.outcome === "completed" ? "not recorded" : "completed"}`}
-                                    title="Toggle session completion"
-                                    onClick={() =>
-                                      setOutcome(
-                                        b.kind,
-                                        b.sourceId,
-                                        d,
-                                        b.outcome === "completed"
-                                          ? "pending"
-                                          : "completed",
-                                      )
-                                    }
-                                  >
-                                    <Check size={12} />
-                                  </button>
-                                  <OutcomeSelect
-                                    compact
-                                    value={b.outcome}
-                                    onChange={(v) =>
-                                      setOutcome(
-                                        b.kind,
-                                        b.sourceId,
-                                        d,
-                                        v as Outcome,
-                                      )
-                                    }
-                                  />
-                                </div>
-                              )}
-                              {(b.kind === "session" ||
-                                b.kind === "routine" ||
-                                (b.kind === "external" &&
-                                  editableEvents.has(b.sourceId))) && (
-                                <>
-                                  {resizeControl(b, "start")}
-                                  {resizeControl(b, "end")}
-                                </>
-                              )}
-                            </div>
-                          ),
-                        )}
+                              <span className="block-title">
+                                {b.kind === "routine" && <Repeat2 size={11} />}{" "}
+                                {b.outcome === "completed" && (
+                                  <Check size={11} />
+                                )}{" "}
+                                {b.title}
+                              </span>
+                              <span className="block-time">
+                                {displayTime(clockTime(b.start))} –{" "}
+                                {b.start + b.duration === 1440
+                                  ? "12am"
+                                  : displayTime(
+                                      clockTime(b.start + b.duration),
+                                    )}
+                                {b.needsReview ? " · Review" : ""}
+                              </span>
+                            </button>
+                            {b.kind !== "external" && (
+                              <div className="block-controls">
+                                <button
+                                  aria-label={`Mark ${b.title} ${b.outcome === "completed" ? "not recorded" : "completed"}`}
+                                  title="Toggle session completion"
+                                  onClick={() =>
+                                    setOutcome(
+                                      b.kind,
+                                      b.sourceId,
+                                      d,
+                                      b.outcome === "completed"
+                                        ? "pending"
+                                        : "completed",
+                                    )
+                                  }
+                                >
+                                  <Check size={12} />
+                                </button>
+                                <OutcomeSelect
+                                  compact
+                                  value={b.outcome}
+                                  onChange={(v) =>
+                                    setOutcome(
+                                      b.kind,
+                                      b.sourceId,
+                                      d,
+                                      v as Outcome,
+                                    )
+                                  }
+                                />
+                              </div>
+                            )}
+                            {(b.kind === "session" ||
+                              b.kind === "routine" ||
+                              (b.kind === "external" &&
+                                editableEvents.has(b.sourceId))) && (
+                              <>
+                                {resizeControl(b, "start")}
+                                {resizeControl(b, "end")}
+                              </>
+                            )}
+                          </div>
+                        ))}
                         {sessionPreview?.date === d && (
                           <div
                             className="session-time-preview"
@@ -1319,6 +1434,64 @@ export function Planner({
           </div>
         </section>
       </div>
+      {view !== "Year Columns" && (
+        <section
+          className="extra-recommendations-bank"
+          aria-labelledby="extra-bank-title"
+        >
+          <div className="extra-bank-heading">
+            <div>
+              <h2 id="extra-bank-title">Extra-time bank</h2>
+              <p>
+                Optional recommendations · Separate from your main to-do list
+              </p>
+            </div>
+            <button
+              className="button secondary small"
+              disabled={
+                !aiReady || aiBusy || !aiPriorities || aiPriorities.stale
+              }
+              onClick={requestExtras}
+            >
+              {aiExtras
+                ? "Refresh extra recommendations"
+                : "Get extra recommendations"}
+            </button>
+          </div>
+          {!aiPriorities || aiPriorities.stale ? (
+            <p className="form-hint">
+              Refresh the main to-do list to request extras.
+            </p>
+          ) : null}
+          {aiExtras && (
+            <>
+              <p className="extra-bank-explanation">{aiExtras.summary}</p>
+              {aiExtras.stale && (
+                <p className="form-hint" role="status">
+                  Plan changed · Refresh recommendations before adding tasks.
+                </p>
+              )}
+              <div className="extra-bank-tasks">
+                {extraTasks.map((task) => (
+                  <article className="extra-bank-task" key={task.id}>
+                    <span>{task.title}</span>
+                    <button
+                      className="button secondary small"
+                      disabled={aiBusy || aiExtras.stale}
+                      onClick={() => addExtraToToday(task)}
+                    >
+                      Add to today
+                    </button>
+                  </article>
+                ))}
+              </div>
+              {!extraTasks.length && (
+                <p className="form-hint">No additional tasks in this bank.</p>
+              )}
+            </>
+          )}
+        </section>
+      )}
     </>
   );
 }
@@ -1328,26 +1501,35 @@ function markersForDay(state: State, date: string) {
     ...state.deadlines
       .filter(
         (d) =>
-          (d.status === "active" || !!d.deletedProject) &&
+          (d.status === "active" ||
+            d.status === "resolved" ||
+            !!d.deletedProject) &&
           d.date === date &&
           !overridden.has((d.historicalKind ?? "deadline") + ":" + d.id),
       )
-      .map((d) => ({ id: d.id, title: d.title })),
+      .map((d) => ({
+        id: d.id,
+        title: d.title,
+        completed: d.status === "resolved",
+      })),
     ...state.projects
       .filter((p) => p.status === "active")
       .flatMap((p) => [
         ...(p.deadline === date && !overridden.has("project:" + p.id)
-          ? [{ id: p.id, title: p.title }]
+          ? [{ id: p.id, title: p.title, completed: p.status === "completed" }]
           : []),
         ...p.milestones
           .filter(
             (m) =>
               m.approved &&
-              !m.completed &&
               m.date === date &&
               !overridden.has("milestone:" + m.id),
           )
-          .map((m) => ({ id: m.id, title: m.title })),
+          .map((m) => ({
+            id: m.id,
+            title: m.title,
+            completed: m.completed || p.status === "completed",
+          })),
       ]),
   ];
 }
@@ -1385,8 +1567,8 @@ function YearColumns({
                 const markers = markersForDay(state, date);
                 const blocks = blocksForDay(state, date, events);
                 const items = [
-                  ...markers.map(({ title }) => ({
-                    title: "Due: " + title,
+                  ...markers.map(({ title, completed }) => ({
+                    title: (completed ? "✓ " : "") + "Due: " + title,
                     color: "peach",
                   })),
                   ...blocks.map(({ title, color }) => ({ title, color })),
@@ -1501,8 +1683,12 @@ function Month({
           >
             <strong>{Number(d.slice(-2))}</strong>
             {deadlines.slice(0, 1).map((x) => (
-              <span className="month-event peach" key={x.id}>
-                ⚑ {x.title}
+              <span
+                className={`month-event peach ${x.completed ? "deadline-completed" : ""}`}
+                key={x.id}
+              >
+                {x.completed ? "✓ " : "⚑ "}
+                {x.title}
               </span>
             ))}
             {blocks.slice(0, 3 - deadlines.slice(0, 1).length).map((b) => (

@@ -1,9 +1,13 @@
 import { z } from "zod";
-import { State, projectPlanningData } from "./model";
+import { State, projectPlanningData, taskSchema } from "./model";
 import { zonedParts } from "./engine";
 
 export const priorityResultSchema = z.object({
-  summary: z.string().max(12000),
+  summary: z.string(),
+  generatedTasks: z.array(taskSchema).optional(),
+  decisionMemory: z
+    .array(z.object({ commitment: z.string(), rationale: z.string() }))
+    .default([]),
   recommendations: z.array(
     z.object({
       taskId: z.string(),
@@ -18,11 +22,21 @@ export function workspaceDay(state: State) {
 
 // A small change detector for saved results, not an authorization or integrity check.
 function fingerprint(value: unknown) {
-  const input = JSON.stringify(value);
+  // Server schema parsing can reorder object properties. Compare their values,
+  // so a client key remains valid after the same records cross the API boundary.
+  const input = JSON.stringify(value, (_key, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
   let hash = 2166136261;
   for (let i = 0; i < input.length; i++)
     hash = Math.imul(hash ^ input.charCodeAt(i), 16777619);
-  return `v1:${input.length}:${(hash >>> 0).toString(16)}`;
+  return `v2:${input.length}:${(hash >>> 0).toString(16)}`;
 }
 
 export function evidenceKey(
@@ -42,15 +56,16 @@ export function evidenceKey(
   } = state.settings;
   const priorReview = state.reviews
     .filter((review) => review.date < date)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    .sort(
+      (a, b) =>
+        b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt),
+    )[0];
   return fingerprint([
     date,
     today,
     selfReport,
-    priorReview?.id,
-    state.reviews
-      .filter((review) => review.commitmentKey)
-      .map((review) => review.id),
+    priorReview,
+    state.reviews,
     state.tasks,
     state.deadlines,
     state.projects.map(projectPlanningData),
@@ -60,7 +75,13 @@ export function evidenceKey(
     state.routineRecords,
     state.events
       .filter((event) => !event.free && !event.holiday)
-      .map(({ id, start, end, allDay }) => [id, start, end, allDay]),
+      .map(({ id, title, start, end, allDay }) => [
+        id,
+        title,
+        start,
+        end,
+        allDay,
+      ]),
     timezone,
     workStart,
     workEnd,

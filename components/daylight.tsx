@@ -30,6 +30,7 @@ import { useWorkspace } from "@/lib/use-workspace";
 import {
   State,
   Outcome,
+  Task,
   dayKey,
   clockMinutes,
   defaultSessionDuration,
@@ -259,6 +260,17 @@ export default function Daylight() {
         ...savedPriorities.data,
         stale: savedPriorityRun?.inputKey !== priorityInput,
         createdAt: savedPriorityRun!.createdAt,
+      }
+    : null;
+  const savedExtraRun = state.aiRuns.findLast((run) => run.kind === "extras");
+  const savedExtras = priorityResultSchema.safeParse(savedExtraRun?.output);
+  const aiExtras = savedExtras.success
+    ? {
+        ...savedExtras.data,
+        stale:
+          savedExtraRun?.inputKey !== priorityInput ||
+          savedExtraRun?.snapshot.mainRunId !== savedPriorityRun?.id,
+        createdAt: savedExtraRun!.createdAt,
       }
     : null;
   const notify = useCallback((text: string) => setToast(text), []);
@@ -693,13 +705,21 @@ export default function Daylight() {
       update((s) => {
         if (
           projectDraftKey(s, projectId, "milestones") !== inputKey ||
-          JSON.stringify(s.projects.find((p) => p.id === projectId)?.milestones) !==
-            JSON.stringify(state.projects.find((p) => p.id === projectId)?.milestones)
+          JSON.stringify(
+            s.projects.find((p) => p.id === projectId)?.milestones,
+          ) !==
+            JSON.stringify(
+              state.projects.find((p) => p.id === projectId)?.milestones,
+            )
         )
-          throw new Error("Your project changed while Gemini was working. Try the proposal again.");
+          throw new Error(
+            "Your project changed while Gemini was working. Try the proposal again.",
+          );
         const p = s.projects.find((p) => p.id === projectId)!;
         for (const dependency of result.dependencyUpdates ?? []) {
-          const milestone = p.milestones.find((m) => m.id === dependency.milestoneId);
+          const milestone = p.milestones.find(
+            (m) => m.id === dependency.milestoneId,
+          );
           if (milestone) milestone.dependsOn = dependency.dependsOn;
         }
         p.milestones.push(
@@ -729,7 +749,8 @@ export default function Daylight() {
       notify(
         result.milestones.length
           ? "Draft milestones added. Review their rationale and approve each date."
-          : result.summary || "Gemini found no additional milestones to propose.",
+          : result.summary ||
+              "Gemini found no additional milestones to propose.",
       );
     } catch (e) {
       notify((e as Error).message);
@@ -747,8 +768,7 @@ export default function Daylight() {
       let usedLocalFallback = false;
       if (result.aiError) {
         usedLocalFallback = confirm(
-          result.aiError +
-            "\n\nUse Daylight’s local ranking for this refresh?",
+          result.aiError + "\n\nUse Daylight’s local ranking for this refresh?",
         );
         if (!usedLocalFallback) {
           notify("To-do list unchanged.");
@@ -774,7 +794,9 @@ export default function Daylight() {
             "Your plan changed while refreshing. Refresh to update the to-do bank.",
           );
         s.tasks = expireGeneratedTodos(s, day, minute);
-        const scheduledTaskIds = new Set(s.sessions.map((session) => session.taskId));
+        const scheduledTaskIds = new Set(
+          s.sessions.map((session) => session.taskId),
+        );
         for (const task of s.tasks) {
           if (!task.aiTodoDate || scheduledTaskIds.has(task.id)) continue;
           task.title = task.title.replace(/^\s*work\s+on\s+/i, "").trim();
@@ -790,15 +812,108 @@ export default function Daylight() {
           output: {
             summary: result.summary,
             recommendations: result.recommendations,
+            decisionMemory: result.decisionMemory ?? [],
           },
         });
       });
-      notify(usedLocalFallback ? "Local priorities saved." : "To-do list refreshed.");
+      notify(
+        usedLocalFallback ? "Local priorities saved." : "To-do list refreshed.",
+      );
     } catch (e) {
       notify((e as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+  async function requestExtras() {
+    if (busy || !aiPriorities || aiPriorities.stale) return;
+    setBusy(true);
+    notify("Asking Gemini for optional extra-time recommendations.");
+    try {
+      const result = await api("/api/priorities", { state, mode: "extras" });
+      if (latestMode.current !== mode) return;
+      if (result.aiError) throw new Error(result.aiError);
+      const output = priorityResultSchema.parse({
+        ...result,
+        generatedTasks: result.generatedTasks ?? [],
+      });
+      update((s) => {
+        const day = workspaceDay(s);
+        if (
+          day !== planningDay ||
+          evidenceKey(s, day) !== priorityInput ||
+          s.aiRuns.findLast((run) => run.kind === "priorities")?.id !==
+            savedPriorityRun?.id
+        )
+          throw new Error(
+            "Your plan changed. Refresh the main list before requesting extras again.",
+          );
+        s.aiRuns.push({
+          id: uid(),
+          kind: "extras",
+          createdAt: new Date().toISOString(),
+          version: result.version,
+          inputKey: evidenceKey(s, day),
+          snapshot: result.snapshot,
+          output,
+        });
+      });
+      notify("Extra-time recommendations saved in their separate bank.");
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function addExtraToToday(task: Task) {
+    change((s) => {
+      const day = workspaceDay(s);
+      const extraRun = s.aiRuns.findLast((run) => run.kind === "extras");
+      const mainRun = s.aiRuns.findLast((run) => run.kind === "priorities");
+      if (
+        !extraRun ||
+        extraRun.inputKey !== evidenceKey(s, day) ||
+        extraRun.snapshot.mainRunId !== mainRun?.id
+      )
+        throw new Error("Refresh the recommendations before adding this task.");
+      const extras = priorityResultSchema.parse(extraRun.output);
+      if (!extras.recommendations.some((item) => item.taskId === task.id))
+        return;
+      let selected = s.tasks.find((item) => item.id === task.id);
+      if (!selected) {
+        selected = taskSchema.parse(
+          extras.generatedTasks?.find((item) => item.id === task.id),
+        );
+        s.tasks.push(selected);
+      }
+      selected.includeDate = day;
+      const main = priorityResultSchema.safeParse(mainRun?.output);
+      if (
+        mainRun &&
+        main.success &&
+        !main.data.recommendations.some((item) => item.taskId === selected.id)
+      ) {
+        mainRun.output = {
+          ...main.data,
+          recommendations: [
+            ...main.data.recommendations,
+            {
+              taskId: selected.id,
+              reason: "Added by you from the extra-time bank.",
+            },
+          ],
+        };
+      }
+      extraRun.output = {
+        ...extras,
+        recommendations: extras.recommendations.filter(
+          (item) => item.taskId !== selected.id,
+        ),
+      };
+      // Keep the remaining optional bank usable; the main explanation is marked stale.
+      extraRun.inputKey = evidenceKey(s, day);
+      audit(s, "Added extra recommendation to today", selected.id);
+    });
   }
   async function proposeTasks(projectId: string, milestoneId: string) {
     if (busy) return;
@@ -806,7 +921,11 @@ export default function Daylight() {
     setBusy(true);
     notify("Asking Gemini for task drafts. This can take up to a minute.");
     try {
-      const result = await api("/api/projects/tasks", { state, projectId, milestoneId });
+      const result = await api("/api/projects/tasks", {
+        state,
+        projectId,
+        milestoneId,
+      });
       if (latestMode.current !== mode) return;
       update((s) =>
         s.aiRuns.push({
@@ -1064,18 +1183,6 @@ export default function Daylight() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-note">
-          <span className="note-sun">☼</span>
-          <h3>
-            A little less busy.
-            <br />A little more intentional.
-          </h3>
-          <p>
-            You don’t have to do it all.
-            <br />
-            Just make room for what matters.
-          </p>
-        </div>
         <div className="sidebar-bottom">
           <button
             className={"nav-item " + (view === "settings" ? "active" : "")}
@@ -1278,6 +1385,14 @@ export default function Daylight() {
               aiBusy={busy}
               requestPriorities={requestPriorities}
               aiPriorities={aiPriorities}
+              aiExtras={aiExtras}
+              requestExtras={requestExtras}
+              addExtraToToday={addExtraToToday}
+              setOverlapView={(layout) =>
+                change((s) => {
+                  s.settings.blockOverlapView = layout;
+                })
+              }
             />
           )}{" "}
           {view === "tasks" && <Tasks {...props} />}{" "}
@@ -1422,7 +1537,12 @@ export default function Daylight() {
       {taskDrafts && (
         <Dialog
           title="Review the next few steps"
-          subtitle={state.projects.find((p) => p.id === taskDrafts.projectId)?.milestones.find((m) => m.id === taskDrafts.milestoneId)?.title || "Selected milestone"}
+          subtitle={
+            state.projects
+              .find((p) => p.id === taskDrafts.projectId)
+              ?.milestones.find((m) => m.id === taskDrafts.milestoneId)
+              ?.title || "Selected milestone"
+          }
           onClose={() => setTaskDrafts(null)}
         >
           <form

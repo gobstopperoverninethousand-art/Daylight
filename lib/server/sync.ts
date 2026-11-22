@@ -310,13 +310,16 @@ export async function synchronizeWorkspace(
         nativeTime = true;
       }
     }
+    const routineSeries = key.startsWith("routine:");
     const googleOverride = session
       ? !nativeTime
       : remote.summary !== local.summary ||
         remote.start !== local.start ||
         remote.end !== local.end ||
         remote.transparency !== local.transparency ||
-        JSON.stringify(remote.recurrence) !== JSON.stringify(local.recurrence);
+        (!routineSeries &&
+          JSON.stringify(remote.recurrence) !==
+            JSON.stringify(local.recurrence));
     nextLinks.set(key, {
       key,
       calendarId,

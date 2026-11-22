@@ -17,28 +17,63 @@ export function commitmentHistory(state: State) {
       )?.milestones ?? [])
         related.add("milestone:" + milestone.id);
     }
-    const updates = state.reviews.flatMap((review) =>
-      review.commitmentUpdates
-        ? review.commitmentUpdates
-            .filter((update) => related.has(update.key))
-            .map((update) => ({
-              date: review.date,
-              commitment: update.key,
-              note: update.note,
-            }))
-        : review.commitmentKey && related.has(review.commitmentKey)
-          ? [{
-              date: review.date,
-              commitment: review.commitmentKey,
-              focus: review.focus,
-              note: typeof review.snapshot.confirmed_interpretation === "string"
-                ? review.snapshot.confirmed_interpretation
-                : review.accomplishment,
-              blocker: review.blocker,
-              follow_up: review.snapshot.follow_up,
-            }]
-          : [],
-    );
+    for (const task of state.tasks) {
+      if (
+        (entry.kind === "deadline" && task.deadlineId === entry.id) ||
+        (entry.kind === "milestone" && task.milestoneId === entry.id) ||
+        (entry.kind === "project" &&
+          (task.projectId === entry.id ||
+            state.deadlines.some(
+              (deadline) =>
+                deadline.id === task.deadlineId &&
+                deadline.projectId === entry.id,
+            )))
+      )
+        related.add("task:" + task.id);
+    }
+    const updates = [...state.reviews]
+      .sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          a.createdAt.localeCompare(b.createdAt),
+      )
+      .flatMap((review) =>
+        review.commitmentUpdates
+          ? review.commitmentUpdates
+              .filter((update) => related.has(update.key))
+              .map((update) => ({
+                date: review.date,
+                commitment: update.key,
+                focus: review.focus,
+                blocker: review.blocker,
+                follow_up: review.snapshot.follow_up,
+                note: update.note,
+                reported_account: review.accomplishment,
+                reported_blocker: review.blocker,
+                confirmed_account: review.snapshot.confirmed_interpretation,
+                earlier_report_changed: review.snapshot.earlier_report_changed,
+              }))
+          : review.commitmentKey && related.has(review.commitmentKey)
+            ? [
+                {
+                  date: review.date,
+                  commitment: review.commitmentKey,
+                  focus: review.focus,
+                  note:
+                    typeof review.snapshot.confirmed_interpretation === "string"
+                      ? review.snapshot.confirmed_interpretation
+                      : review.accomplishment,
+                  blocker: review.blocker,
+                  follow_up: review.snapshot.follow_up,
+                  reported_account: review.accomplishment,
+                  reported_blocker: review.blocker,
+                  confirmed_account: review.snapshot.confirmed_interpretation,
+                  earlier_report_changed:
+                    review.snapshot.earlier_report_changed,
+                },
+              ]
+            : [],
+      );
     const sessions = state.sessions.filter((session) => {
       const task = taskById.get(session.taskId);
       if (
@@ -71,7 +106,9 @@ export function commitmentHistory(state: State) {
           (a, b) =>
             b.date.localeCompare(a.date) || b.start.localeCompare(a.start),
         )
-        .map(({ date, outcome, actualMinutes, note, focus }) => ({
+        .map(({ taskId, date, outcome, actualMinutes, note, focus }) => ({
+          taskId,
+          title: taskById.get(taskId)?.title,
           date,
           outcome,
           actualMinutes,

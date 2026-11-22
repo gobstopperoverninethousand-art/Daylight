@@ -23,5 +23,9 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "components/daylight 10.06.29 PM.tsx",
+    "app/api/projects/propose/route 9.11.32 PM.ts"
+  ]
 }

@@ -1,112 +1,94 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import {
-  stateSchema,
-  daySchema,
-  assessmentSchema,
-  commitmentUpdateSchema,
-  validateReferences,
-} from "@/lib/model";
-import { assess, makeSnapshot } from "@/lib/engine";
+import { stateSchema, daySchema, validateReferences } from "@/lib/model";
 import { requireUser, limited, readBody, failure } from "@/lib/server/auth";
-import { callAI, AI_PROMPT_VERSION, validateAIResult } from "@/lib/server/ai";
+import { callAI, validateAIResult } from "@/lib/server/ai";
+import {
+  allProgressDestinations,
+  interpretationSchema,
+} from "@/lib/progress-update";
 import { commitmentHistory } from "@/lib/commitment-context";
-import { deadlineEntries } from "@/lib/deadlines";
 export const maxDuration = 120;
-
+export const PROGRESS_PROMPT = `Clean up the user's open-ended progress account without changing its meaning. You are a smart updater, not a pacing assessor. Preserve all material accomplishments, unfinished work, quality, difficulty, estimates, blockers, dependencies, postponements and reasons, uncertainty, future constraints and miscellaneous context. Every factual claim requires user-reported or recorded evidence; absence remains unknown for ALL categories. Never invent completion, pace or effort. A completed session is not a completed task. Keep the assigned report date distinct from submission time. Prior history supplies identity/context only; do not copy earlier progress into this day's account.
+Return JSON {overview:string,questions:string[],updates:[{keys:string[],note:string}]}. Each updates entry is a visually separate, complete cleaned portion of the account. Preserve every material detail across these entries, including unassigned miscellaneous context. overview is a separate cohesive paragraph giving today's overall deadline/milestone/project progress; it saves ONLY to daily and weekly reports, never record histories. Generate the overview from the update sections. Ask up to THREE DISTINCT material questions about unclear meaning or destinations; ask none if unnecessary. Each update contains the relevant detailed portion and all relevant keys from destinations. Use an empty keys array when uncertain; never guess an ambiguous destination. Include relevant task/milestone/deadline/project connections; one section may have multiple keys so all destinations receive the same final edited text. Do not alter dates, task status or estimates. The user will edit the interpretation, update text and dropdown destinations before saving. No information is saved until confirmation. If given a revised interpretation and follow-up answers, incorporate those corrections and return a new draft for verification; do not invent new questions beyond the original three. Examples: PCB placement/routing comments map to the PCB milestone of Robotics; distinguish PCB #1 from PCB #2. Unrelated biology comments map to biology. Unknown scope stays uncertain. Preserve open-ended detail without forcing categories.`;
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
-    await limited(user.id, "ai-review", 12);
     const data = z
       .object({
+        mode: z.enum(["organize", "overview"]).default("organize"),
+        updates: z
+          .array(
+            z.object({
+              keys: z.array(z.string()),
+              note: z.string().trim().min(1),
+            }),
+          )
+          .optional(),
         state: stateSchema,
         date: daySchema,
-        focus: z.string().max(80),
-        blocker: z.string().max(4000),
-        accomplishment: z.string().max(4000),
-        commitmentKey: z.string().max(180).optional(),
-        stage: z.enum(["interpret", "report"]).default("report"),
-        followUp: z
-          .object({
-            question: z.string().trim().min(1).max(300),
-            answer: z.string().trim().max(1500),
-          })
+        focus: z.string().default(""),
+        blocker: z.string().default(""),
+        accomplishment: z.string().default(""),
+        confirmedInterpretation: z.string().optional(),
+        followUps: z
+          .array(z.object({ question: z.string(), answer: z.string() }))
+          .max(3)
           .optional(),
-        confirmedInterpretation: z.string().trim().min(1).max(2500).optional(),
       })
       .parse(await readBody(req));
-    const commitments = deadlineEntries(data.state).map((entry) => ({
-      ...entry,
-      key: entry.kind + ":" + entry.id,
-    }));
-    const linkedCommitment = commitments.find((entry) => entry.key === data.commitmentKey);
-    if (data.stage === "interpret") {
-      const schema = z.object({
-        interpretation: z.string().trim().min(1).max(2500),
-        question: z.string().trim().min(1).max(300).nullable(),
-      });
-      const result = await callAI(
-        "Restate the user’s account in one short paragraph. Distinguish what moved forward, what remains, and what is blocked. Use the names the user supplied for deadlines or milestones. Preserve uncertainty and avoid guessing which commitment they meant. Mention focus only when reported. Do not assess pacing or infer additional progress. If one missing detail would materially change pacing or the next action, ask one brief question naming the relevant task or milestone when its identity is clear. Otherwise return null for question. Return {interpretation:string,question:string|null}.",
-        {
-          linked_commitment: linkedCommitment,
-          commitments,
-          focus: data.focus,
-          blocker: data.blocker,
-          accomplishment: data.accomplishment,
-          sessions: data.state.sessions
-            .filter((session) => session.date === data.date)
-            .map(({ taskId, outcome, note }) => ({
-              title: data.state.tasks.find((task) => task.id === taskId)?.title,
-              outcome,
-              note,
-            })),
-        },
+    await limited(
+      user.id,
+      data.mode === "overview" ? "ai-review-overview" : "ai-review",
+      data.mode === "overview" ? 60 : 12,
+    );
+    validateReferences(data.state);
+    const destinations = allProgressDestinations(data.state, data.date);
+    const keys = new Set(destinations.map((d) => d.key));
+    if (data.mode === "overview") {
+      if (
+        !data.updates?.length ||
+        data.updates.some((update) => update.keys.some((key) => !keys.has(key)))
+      )
+        throw new Error("Check the update sections and destinations.");
+      return NextResponse.json(
+        validateAIResult(
+          z.object({ overview: z.string().trim().min(1) }),
+          await callAI(
+            "Return JSON {overview:string}. Write one cohesive paragraph describing today's overall deadline/milestone/project progress using ONLY the supplied edited sections and their selected destination names. These sections are the source of truth. Preserve uncertainty; do not invent completion, effort, pace or risks. Do not reintroduce removed or corrected claims. Do not rewrite the sections or change destinations. This overview is for daily and weekly reports only.",
+            {
+              assigned_report_date: data.date,
+              updates: data.updates.map((update) => ({
+                note: update.note,
+                destinations: update.keys.map(
+                  (key) =>
+                    destinations.find((destination) => destination.key === key)
+                      ?.label,
+                ),
+              })),
+            },
+          ),
+        ),
       );
-      return NextResponse.json(validateAIResult(schema, result));
     }
-    const snapshot = makeSnapshot(
-      validateReferences(data.state),
-      data.date,
-      data.focus,
-      data.blocker,
-      data.accomplishment,
+    const result = validateAIResult(
+      interpretationSchema,
+      await callAI(PROGRESS_PROMPT, {
+        assigned_report_date: data.date,
+        destinations,
+        account: data.confirmedInterpretation ?? data.accomplishment,
+        focus: data.focus,
+        blocker: data.blocker,
+        follow_ups: data.followUps,
+        commitment_history: commitmentHistory({
+          ...data.state,
+          reviews: data.state.reviews.filter((r) => r.date < data.date),
+        }),
+      }),
     );
-    const recordedAssessment = assess(snapshot);
-    const reportSnapshot = {
-      ...snapshot,
-      linked_commitment: linkedCommitment,
-      recorded_pacing: recordedAssessment.pacing_status,
-      confirmed_interpretation: data.confirmedInterpretation,
-      follow_up: data.followUp,
-    };
-    const commitmentKeys = new Set(commitments.map((entry) => entry.key));
-    const reportSchema = assessmentSchema.extend({
-      commitmentUpdates: z.array(commitmentUpdateSchema).refine(
-        (updates) =>
-          new Set(updates.map(({ key }) => key)).size === updates.length &&
-          updates.every(({ key }) => commitmentKeys.has(key)),
-      ),
-    });
-    const result = await callAI(
-      'Also include commitmentUpdates: [{key:string,note:string}] in the same JSON object. Write one concise new progress note for each clearly affected project, deadline, or milestone using its exact key from commitments. Use today’s confirmed account (or original answers if unconfirmed) and any follow-up answer. A manually selected commitment is a hint. Include all clearly affected commitments, including a parent project when the update materially changes its progress. Keep each note specific to that record and under 600 characters. Do not restate or rewrite past notes, copy unrelated details, infer completion, or guess an ambiguous match. Return an empty array if no update is supported. Return {commitmentUpdates, pacing_status: "on-track"|"needs-attention"|"at-risk"|"blocked"|"insufficient-information", summary:string, time_use_observation:string, focus_observation:string, evidence:string[], missing_information:string[], next_action:string, questions_if_needed:string[]}. Use linked commitment history for context, distinguish earlier updates from today’s changes, and treat session outcomes as records of work rather than confirmation that a commitment is finished. Lead with what changed today and how it affects the named deadline or milestone. Distinguish work the user reports as finished from work still open. Surface the most consequential pacing risk and suggest one concrete next action, leaving session length to the user. Use recorded_pacing as the pacing status and ground the explanation in the supplied evidence. When estimated remaining work exceeds recorded capacity, cite both quantities. Report actual time only when actual_time_reports is positive. Only ask a follow-up when the answer could change the next action or pacing assessment. Ask at most one specific question. When confirmed_interpretation is present, use any follow_up answer as user-reported evidence. For an empty follow_up answer, record material uncertainty without repeating the question. Return an empty questions_if_needed array for the confirmed flow. Mention missing or stale calendar data when it limits confidence. If confirmed_interpretation is present, use it as the user’s corrected account of their answers.',
-      {
-        ...reportSnapshot,
-        commitments,
-        commitment_history: commitmentHistory(data.state),
-      },
-    );
-    const { commitmentUpdates, ...assessment } = validateAIResult(reportSchema, result);
-    return NextResponse.json({
-      assessment: {
-        ...assessment,
-        pacing_status: recordedAssessment.pacing_status,
-        ...(data.confirmedInterpretation ? { questions_if_needed: [] } : {}),
-      },
-      commitmentUpdates,
-      snapshot: reportSnapshot,
-      version: AI_PROMPT_VERSION + "/review-v6",
-    });
+    if (result.updates.some((u) => u.keys.some((key) => !keys.has(key))))
+      throw new Error("Unknown designation");
+    return NextResponse.json(result);
   } catch (e) {
     return failure(e);
   }

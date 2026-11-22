@@ -6,6 +6,7 @@ import {
   weekday,
   dayKey,
 } from "./model";
+import { routineMatchesDate } from "./engine";
 export type GoogleEvent = {
   id?: string;
   etag?: string;
@@ -208,6 +209,89 @@ export function outboundEvents(
     });
   }
   for (const r of s.routines) {
+    if (!r.untimed && r.timeSchedules?.length) {
+      const schedules = [...r.timeSchedules].sort((a, b) =>
+        a.effective.localeCompare(b.effective),
+      );
+      if (schedules[0].effective > r.since)
+        schedules.unshift({
+          effective: r.since,
+          start: r.start,
+          weekdays: Array(7).fill(null),
+        });
+      for (let index = 0; index < schedules.length; index++) {
+        const schedule = schedules[index];
+        const segmentStart =
+          schedule.effective < r.since ? r.since : schedule.effective;
+        const segmentEnd =
+          [
+            r.until,
+            r.deletedAt ? addDays(r.deletedAt, -1) : null,
+            schedules[index + 1]
+              ? addDays(schedules[index + 1].effective, -1)
+              : null,
+          ]
+            .filter((x): x is string => !!x)
+            .sort()[0] || null;
+        for (let day = 0; day < 7; day++) {
+          if (r.recurrenceUnit !== "days" && !r.days.includes(day)) continue;
+          let first = segmentStart;
+          // Search for the first matching original occurrence to retain the recurrence phase.
+          let steps = 0;
+          while (
+            (weekday(first) !== day ||
+              !routineMatchesDate(
+                r.since,
+                first,
+                r.recurrenceInterval || 1,
+                r.recurrenceUnit || "weeks",
+              )) &&
+            steps < 20000 &&
+            (!segmentEnd || first <= segmentEnd)
+          ) {
+            first = addDays(first, 1);
+            steps++;
+          }
+          if (steps >= 20000 || (segmentEnd && first > segmentEnd)) continue;
+          const start = schedule.weekdays[day] || schedule.start;
+          const child = {
+            ...r,
+            since: first,
+            until: segmentEnd,
+            start,
+            days: [day],
+            timeSchedules: undefined,
+          };
+          const exceptions = s.exceptions.filter(
+            (x) =>
+              x.routineId !== r.id ||
+              (weekday(x.date) === day &&
+                x.date >= segmentStart &&
+                (!segmentEnd || x.date <= segmentEnd)),
+          );
+          const generated = outboundEvents(
+            {
+              ...s,
+              sessions: [],
+              deadlines: [],
+              projects: [],
+              routines: [child],
+              exceptions,
+            },
+            today,
+          );
+          for (const entry of generated) {
+            if (entry.key === `routine:${r.id}`) {
+              entry.key = `routine:${r.id}:${schedule.effective}:${day}`;
+              if (r.recurrenceUnit === "days")
+                entry.event.recurrence![0] += `;BYDAY=${["SU", "MO", "TU", "WE", "TH", "FR", "SA"][day]}`;
+            }
+            out.push(entry);
+          }
+        }
+      }
+      continue;
+    }
     let first = r.since;
     for (
       let i = 0;
@@ -220,13 +304,34 @@ export function outboundEvents(
         .filter((a) => a.recordId === r.id && a.action === "Routine paused")
         .at(-1)
         ?.at.slice(0, 10) || today;
-    const until = r.paused ? addDays(pauseDay, -1) : r.until;
+    const periods =
+      r.pausePeriods ?? (r.paused ? [{ start: pauseDay, end: null }] : []);
+    const openPause = periods.find((period) => !period.end);
+    const cutoffs = [
+      r.until,
+      r.deletedAt ? addDays(r.deletedAt, -1) : null,
+      openPause ? addDays(openPause.start, -1) : null,
+    ].filter((date): date is string => !!date);
+    const until = cutoffs.sort()[0] || null;
     const exceptions = s.exceptions.filter((x) => x.routineId === r.id);
     const recurrence = [
       `RRULE:FREQ=${r.recurrenceUnit === "months" ? "MONTHLY" : r.recurrenceUnit === "days" ? "DAILY" : "WEEKLY"};INTERVAL=${r.recurrenceInterval || 1}${r.recurrenceUnit === "days" ? "" : ";WKST=SU;BYDAY=" + r.days.map((d) => ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][d]).join(",")}${until ? ";UNTIL=" + (r.untimed ? until.replace(/-/g, "") : localInstant(until, "23:59", zone).replace(/[-:]/g, "").replace(".000", "")) : ""}`,
     ];
     if (until && until < first) continue;
-    for (const ex of exceptions) {
+    // Closed pause periods must stay excluded after a routine is resumed.
+    const pausedDates: string[] = [];
+    for (const period of periods.filter((p) => p.end)) {
+      for (
+        let date = period.start < first ? first : period.start;
+        date < period.end! && (!until || date <= until);
+        date = addDays(date, 1)
+      )
+        pausedDates.push(date);
+    }
+    for (const ex of [
+      ...exceptions,
+      ...pausedDates.map((date) => ({ date })),
+    ]) {
       // EXDATE is the occurrence's wall time in TZID, not a UTC time without Z.
       recurrence.push(
         r.untimed
@@ -258,7 +363,10 @@ export function outboundEvents(
       },
     });
     for (const ex of exceptions.filter(
-      (x) => !x.skip && (!until || x.date <= until),
+      (x) =>
+        !x.skip &&
+        (!until || x.date <= until) &&
+        !periods.some((p) => x.date >= p.start && (!p.end || x.date < p.end)),
     ))
       out.push({
         key: `exception:${r.id}:${ex.date}`,

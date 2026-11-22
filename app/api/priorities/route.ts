@@ -10,6 +10,8 @@ import {
 } from "@/lib/model";
 import {
   capacity,
+  blocksForDay,
+  calendarEventIntervals,
   makeSnapshot,
   scheduledTaskIds,
   zonedParts,
@@ -22,14 +24,21 @@ import {
   HttpError,
 } from "@/lib/server/auth";
 import { callAI, AI_PROMPT_VERSION, validateAIResult } from "@/lib/server/ai";
-import { deadlineEntries } from "@/lib/deadlines";
+import { evidenceKey, priorityResultSchema } from "@/lib/ai-freshness";
+import { planningContext, taskCommitment } from "@/lib/planning-context";
 import {
-  commitmentHistory,
-  expireGeneratedTodos,
-} from "@/lib/commitment-context";
+  MAIN_TODO_PROMPT,
+  EXTRA_RECOMMENDATIONS_PROMPT,
+  PLANNING_PROMPT_VERSION,
+} from "@/lib/server/planning-prompts";
+import { deadlineEntries } from "@/lib/deadlines";
+import { expireGeneratedTodos } from "@/lib/commitment-context";
 
 function todoTitle(title: string) {
-  return title.replace(/^\s*work\s+on\s+/i, "").trim().slice(0, 200);
+  return title
+    .replace(/^\s*work\s+on\s+/i, "")
+    .trim()
+    .slice(0, 200);
 }
 
 export const maxDuration = 120;
@@ -37,27 +46,56 @@ export const maxDuration = 120;
 export async function POST(req: NextRequest) {
   try {
     const user = await requireUser(req);
-    const { state: workspace, useLocalFallback } = z
-      .object({ state: stateSchema, useLocalFallback: z.literal(true).optional() })
+    const {
+      state: workspace,
+      useLocalFallback,
+      mode,
+    } = z
+      .object({
+        state: stateSchema,
+        useLocalFallback: z.literal(true).optional(),
+        mode: z.enum(["main", "extras"]).default("main"),
+      })
       .parse(await readBody(req));
-    await limited(user.id, useLocalFallback ? "local-priorities" : "ai-priorities", 15);
+    if (mode === "extras" && useLocalFallback)
+      throw new HttpError("Extra recommendations require AI.");
+    await limited(
+      user.id,
+      mode === "extras"
+        ? "ai-extras"
+        : useLocalFallback
+          ? "local-priorities"
+          : "ai-priorities",
+      15,
+    );
     validateReferences(workspace);
-    const archivedProjects = workspace.projects.filter((project) => project.status === "completed");
+    const archivedProjects = workspace.projects.filter(
+      (project) => project.status === "completed",
+    );
     const archivedIds = new Set(archivedProjects.map((project) => project.id));
-    const excludedKeys = new Set(archivedProjects.flatMap((project) => [
-      "project:" + project.id,
-      ...project.milestones.map((milestone) => "milestone:" + milestone.id),
-    ]));
+    const excludedKeys = new Set(
+      archivedProjects.flatMap((project) => [
+        "project:" + project.id,
+        ...project.milestones.map((milestone) => "milestone:" + milestone.id),
+      ]),
+    );
     const excludedDeadlines = new Set(
       workspace.deadlines
-        .filter((deadline) => deadline.deletedProject || (deadline.projectId && archivedIds.has(deadline.projectId)))
+        .filter(
+          (deadline) =>
+            deadline.deletedProject ||
+            (deadline.projectId && archivedIds.has(deadline.projectId)),
+        )
         .map((deadline) => {
-          excludedKeys.add((deadline.historicalKind ?? "deadline") + ":" + deadline.id);
+          excludedKeys.add(
+            (deadline.historicalKind ?? "deadline") + ":" + deadline.id,
+          );
           return deadline.id;
         }),
     );
     const tasksForPlanning = workspace.tasks.filter(
-      (task) => !task.deletedProject &&
+      (task) =>
+        !task.deletedProject &&
         !(task.projectId && archivedIds.has(task.projectId)) &&
         !(task.deadlineId && excludedDeadlines.has(task.deadlineId)),
     );
@@ -68,15 +106,23 @@ export async function POST(req: NextRequest) {
       return false;
     });
     const excludedEventIds = new Set(
-      workspace.links.filter((link) => excludedKeys.has(link.key)).map((link) => link.eventId),
+      workspace.links
+        .filter((link) => excludedKeys.has(link.key))
+        .map((link) => link.eventId),
     );
     const state = {
       ...workspace,
-      projects: workspace.projects.filter((project) => !archivedIds.has(project.id)),
-      deadlines: workspace.deadlines.filter((deadline) => !excludedDeadlines.has(deadline.id)),
+      projects: workspace.projects.filter(
+        (project) => !archivedIds.has(project.id),
+      ),
+      deadlines: workspace.deadlines.filter(
+        (deadline) => !excludedDeadlines.has(deadline.id),
+      ),
       tasks: tasksForPlanning,
       sessions: sessionsForPlanning,
-      events: workspace.events.filter((event) => !excludedEventIds.has(event.googleId ?? event.id)),
+      events: workspace.events.filter(
+        (event) => !excludedEventIds.has(event.googleId ?? event.id),
+      ),
     };
     const now = new Date();
     const { day: today, minute } = zonedParts(
@@ -84,6 +130,25 @@ export async function POST(req: NextRequest) {
       state.settings.timezone,
     );
     const tomorrow = addDays(today, 1);
+    const mainRun = workspace.aiRuns.findLast(
+      (run) => run.kind === "priorities",
+    );
+    const mainResult = priorityResultSchema.safeParse(mainRun?.output);
+    if (
+      mode === "extras" &&
+      (!mainResult.success ||
+        mainRun?.inputKey !== evidenceKey(workspace, today))
+    )
+      throw new HttpError(
+        "Refresh the main to-do list before requesting extra recommendations.",
+        409,
+      );
+    const mainIds = new Set(
+      mode === "extras" && mainResult.success
+        ? mainResult.data.recommendations.map((item) => item.taskId)
+        : [],
+    );
+
     const tasks = expireGeneratedTodos(state, today, minute);
     const scheduled = scheduledTaskIds(state);
     const generated = new Map<string, Task>();
@@ -100,7 +165,8 @@ export async function POST(req: NextRequest) {
               !task.milestoneId;
       const linkedUnscheduled = tasks.filter(
         (task) =>
-          task.status === "active" && !task.deletedProject &&
+          task.status === "active" &&
+          !task.deletedProject &&
           !scheduled.has(task.id) &&
           matches(task),
       );
@@ -165,23 +231,24 @@ export async function POST(req: NextRequest) {
       prior_review: null,
     };
     const eligible = candidates
-      .filter((task) => task.status === "active" && !task.deletedProject && !scheduled.has(task.id))
+      .filter(
+        (task) =>
+          task.status === "active" &&
+          !task.deletedProject &&
+          !scheduled.has(task.id) &&
+          (mode === "main" ||
+            (!mainIds.has(task.id) && task.includeDate !== today)),
+      )
       .map((task) => task.id);
     const included = tasks
       .filter(
         (task) =>
-          task.status === "active" && !task.deletedProject &&
+          task.status === "active" &&
+          !task.deletedProject &&
           !scheduled.has(task.id) &&
           task.includeDate === today,
       )
       .map((task) => task.id);
-    if (!eligible.length)
-      return NextResponse.json({
-        summary: "All active tasks already have a place on the calendar.",
-        recommendations: [],
-        snapshot,
-        version: AI_PROMPT_VERSION + "/priorities-v6",
-      });
     const eligibleIds = new Set(eligible);
     const todayPicks = new Set(included);
     const candidatesById = new Map(candidates.map((task) => [task.id, task]));
@@ -252,20 +319,31 @@ export async function POST(req: NextRequest) {
       (latest, task) => (task.due && task.due > latest ? task.due : latest),
       addDays(today, state.settings.horizon - 1),
     );
-    const fallbackIds = () => taskFacts
-      .filter((task) => task.tier < 2 && !task.additionalWorkCandidate)
-      .sort(
-        (a, b) =>
-          a.tier - b.tier ||
-          (a.due ?? "9999").localeCompare(b.due ?? "9999") ||
-          (a.due_time ?? "23:59").localeCompare(b.due_time ?? "23:59") ||
-          (a.commitment ?? a.id).localeCompare(b.commitment ?? b.id) ||
-          a.title.localeCompare(b.title) ||
-          a.id.localeCompare(b.id),
-      )
-      .map((task) => task.id);
+    const fallbackIds = () =>
+      taskFacts
+        .filter((task) => task.tier < 2 && !task.additionalWorkCandidate)
+        .sort(
+          (a, b) =>
+            a.tier - b.tier ||
+            (a.due ?? "9999").localeCompare(b.due ?? "9999") ||
+            (a.due_time ?? "23:59").localeCompare(b.due_time ?? "23:59") ||
+            (a.commitment ?? a.id).localeCompare(b.commitment ?? b.id) ||
+            a.title.localeCompare(b.title) ||
+            a.id.localeCompare(b.id),
+        )
+        .map((task) => task.id);
     const input = {
       ...snapshot,
+      ["today's_fixed_blocks"]: blocksForDay(state, today)
+        .filter((block) => !block.free && block.start + block.duration > minute)
+        .map(({ title, date, start, duration, kind, allDay }) => ({
+          title,
+          date,
+          startMinute: start,
+          endMinute: start + duration,
+          kind,
+          allDay: !!allDay,
+        })),
       eligible_tasks: taskFacts.map(({ tier, ...facts }) => {
         void tier;
         return facts;
@@ -274,26 +352,45 @@ export async function POST(req: NextRequest) {
       projects: state.projects
         .filter((project) => project.status !== "completed")
         .map(projectPlanningData),
-      upcoming_commitments: state.events
-        .filter(
-          (event) =>
-            !event.free &&
-            !event.holiday &&
-            (event.allDay
-              ? event.start
-              : zonedParts(event.start, state.settings.timezone).day) >=
-              tomorrow &&
-            (event.allDay
-              ? event.start
-              : zonedParts(event.start, state.settings.timezone).day) <=
-              lastDue,
-        )
-        .map(({ title, start, end }) => ({ title, start, end })),
-
-      included_for_consideration_task_ids: included,
+      upcoming_commitments: (() => {
+        const intervals = calendarEventIntervals(state);
+        const blocks = [];
+        // Match the engine's capacity horizon (it caps calculation at 370 days).
+        for (
+          let day = tomorrow, count = 0;
+          day <= lastDue && count < 370;
+          day = addDays(day, 1), count++
+        ) {
+          blocks.push(
+            ...blocksForDay(state, day, intervals)
+              .filter((block) => !block.free)
+              .map(({ title, date, start, duration, kind, allDay }) => ({
+                title,
+                date,
+                startMinute: start,
+                endMinute: start + duration,
+                kind,
+                allDay: !!allDay,
+              })),
+          );
+        }
+        return blocks;
+      })(),
+      current_main_list:
+        mode === "extras" && mainResult.success
+          ? {
+              ...mainResult.data,
+              tasks: tasks.filter((task) => mainIds.has(task.id)),
+              generatedAt: mainRun?.createdAt,
+            }
+          : null,
+      ...planningContext(state, candidates),
+      included_for_consideration_task_ids: mode === "main" ? included : [],
+      mainRunId: mode === "extras" ? mainRun?.id : null,
     };
     let summary: string;
     let taskIds: string[];
+    let decisionMemory: { commitment: string; rationale: string }[] = [];
     if (useLocalFallback) {
       taskIds = fallbackIds();
       summary = taskIds.length
@@ -303,27 +400,75 @@ export async function POST(req: NextRequest) {
       try {
         const result = validateAIResult(
           z.object({
-            summary: z.string().trim().min(1).max(12000),
-            taskIds: z.array(z.string()).refine(
-              (ids) =>
-                new Set(ids).size === ids.length &&
-                ids.every((id) => eligibleIds.has(id)) &&
-                included.every((id) => ids.includes(id)),
-            ),
+            recordedWork: z
+              .array(
+                z.object({
+                  sourceTaskId: z.string(),
+                  title: z.string().trim().min(1).max(200),
+                  evidenceQuote: z.string().trim().min(1).max(4000),
+                }),
+              )
+              .default([]),
+            decisionMemory: z
+              .array(
+                z.object({
+                  commitment: z.string(),
+                  rationale: z.string().trim().min(1).max(2500),
+                }),
+              )
+              .default([]),
+            summary: z.string().trim().min(1),
+            taskIds: z
+              .array(z.string())
+              .refine(
+                (ids) =>
+                  new Set(ids).size === ids.length &&
+                  ids.every((id) => eligibleIds.has(id)) &&
+                  (mode === "extras" || included.every((id) => ids.includes(id))),
+              ),
           }),
           await callAI(
-            `Choose today's to-dos from eligible_tasks and order them from highest to lowest priority. Return JSON {taskIds: string[], summary: string}. Use each selected ID once. There is no fixed count. Keep user tasks explicitly marked for today in the list, and include other tasks only when there is a concrete reason to work on them today. If none qualify, return an empty list and explain why.
-
-Apply this decision process:
-1. Assess deadlines, milestone and overall project dates, the nature of the work as recorded, and what the user's latest progress updates say is finished, blocked, or left to do. Use completed sessions and recorded focus as supporting evidence, never as proof of completion or pace. Use explicit importance and commitments. Do not guess consequences from titles.
-2. Ask what becomes harder to finish if work waits until tomorrow. Use the user's remaining work estimates, shared capacity before each due date, and future fixed calendar blocks. A future commitment can justify starting a later deadline today. Do not cut the to-do list to fit today's calendar or use a fixed daily task count. Do not double count shared hours. Flag stale calendar data and distinguish unknown effort from a measured shortfall. When effort is unknown, use documented progress, deadline proximity and the need for multiple sessions as evidence for building a buffer.
-3. Before selecting a generated candidate, check whether a manually entered task already advances the same deadline or milestone. Use explicit links first, then clear matches in titles and notes. Treat a manual task for today as covering that work and mention its contribution in the explanation. Add a generated item for the same commitment only when recorded progress, work remaining, or deadline risk supports doing additional work today beyond that task. Explain what evidence warrants the extra work without prescribing session steps. An additionalWorkCandidate is optional. Rank by supported risk of waiting. A nearer low-effort task may rank below a later commitment with a documented risk of running out of work time. When evidence is otherwise equal, use explicit importance, then earlier due date and time, then title. Add at most one generated work item per commitment, even when the work takes multiple sessions. The user chooses the session lengths, schedule, and what to do during each session. Do not invent or propose subtasks. Generated task titles should name the actual task or commitment directly; never prepend “Work on”.
-4. Write one cohesive explanation of the selection and order with as much detail as the decisions warrant. Explain meaningful tradeoffs, manual-task coverage, and reasons for starting later deadlines now. Also explain why other relevant eligible tasks or milestone/deadline work were left out today (for example, already covered by a manual task, insufficient evidence that more work is needed today, lower supported risk, or missing effort/progress information). Focus on material omissions rather than listing every unrelated task. A short explanation is appropriate only when there is little to explain. Avoid filler and repetitive task descriptions. Point to concrete deadline, progress, or future calendar evidence and say where evidence is missing.`,
-            { ...input, commitment_history: commitmentHistory(state) },
+            mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
+            input,
           ),
         );
         summary = result.summary;
-        taskIds = result.taskIds;
+        taskIds = [...result.taskIds];
+        const commitmentKeys = new Set(
+          entries.map((entry) => `${entry.kind}:${entry.id}`),
+        );
+        if (
+          result.decisionMemory.some(
+            (item) => !commitmentKeys.has(item.commitment),
+          )
+        )
+          throw new HttpError(
+            "AI returned an unknown commitment in its explanation memory.",
+            502,
+          );
+        decisionMemory = result.decisionMemory;
+        for (const item of result.recordedWork) {
+          const source = candidatesById.get(item.sourceTaskId);
+          if (!source || source.status !== "active")
+            throw new HttpError("AI returned an unknown source task.", 502);
+          const task: Task = {
+            id: uid(),
+            title: item.title,
+            deadlineId: source.deadlineId,
+            projectId: source.projectId,
+            milestoneId: source.milestoneId,
+            importance: source.importance,
+            status: "active",
+            estimate: null,
+            remaining: null,
+            notes: item.evidenceQuote,
+            createdAt: now.toISOString(),
+            completedAt: null,
+            aiTodoDate: today,
+          };
+          generated.set(task.id, task);
+          taskIds.push(task.id);
+        }
       } catch (error) {
         if (!(error instanceof HttpError)) throw error;
         return NextResponse.json({ aiError: error.message });
@@ -336,13 +481,15 @@ Apply this decision process:
     return NextResponse.json({
       summary,
       recommendations,
+      decisionMemory,
+      mode,
       generatedTasks: taskIds.flatMap((id) =>
         generated.has(id) ? [generated.get(id)!] : [],
       ),
       snapshot: input,
       version: useLocalFallback
-        ? "daylight-local/priorities-v6"
-        : AI_PROMPT_VERSION + "/priorities-v6",
+        ? "daylight-local/" + PLANNING_PROMPT_VERSION
+        : AI_PROMPT_VERSION + "/" + PLANNING_PROMPT_VERSION + "/" + mode,
       generatedAt: new Date().toISOString(),
     });
   } catch (e) {

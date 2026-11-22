@@ -9,6 +9,7 @@ import {
   durationLabel,
   projectPlanningData,
   googleOverrides,
+  routineStart,
 } from "./model";
 export const RULE_VERSION = "daylight-review-v1.0";
 export type Block = {
@@ -56,7 +57,7 @@ export function calendarEventIntervals(s: State) {
   }));
 }
 
-function routineMatchesDate(
+export function routineMatchesDate(
   since: string,
   date: string,
   interval: number,
@@ -126,6 +127,13 @@ export function blocksForDay(
     const ex = s.exceptions.find(
       (e) => e.routineId === r.id && e.date === date,
     );
+    const currentSchedule = r.timeSchedules
+      ?.filter((item) => item.effective <= date)
+      .sort((a, b) => b.effective.localeCompare(a.effective))[0];
+    const scheduleKey =
+      r.timeSchedules?.length && !r.untimed
+        ? `routine:${r.id}:${currentSchedule?.effective || r.since}:${weekday(date)}`
+        : `routine:${r.id}`;
     const recurringOnDate =
       routineMatchesDate(
         r.since,
@@ -135,9 +143,20 @@ export function blocksForDay(
       ) &&
       (r.recurrenceUnit === "days" || r.days.includes(weekday(date)));
     if (
-      r.paused ||
-      overridden.has("routine:" + r.id) ||
-      occurrenceOverrides.has("routine:" + r.id) ||
+      (r.deletedAt && date >= r.deletedAt) ||
+      (r.pausePeriods?.some(
+        (period) => date >= period.start && (!period.end || date < period.end),
+      ) ??
+        (r.paused &&
+          date >=
+            (s.audit
+              .filter(
+                (a) => a.recordId === r.id && a.action === "Routine paused",
+              )
+              .at(-1)
+              ?.at.slice(0, 10) || dayKey()))) ||
+      overridden.has(scheduleKey) ||
+      occurrenceOverrides.has(scheduleKey) ||
       date < r.since ||
       (r.until && date > r.until) ||
       (!recurringOnDate && !ex)
@@ -149,7 +168,7 @@ export function blocksForDay(
       sourceId: r.id,
       title: r.title,
       date,
-      start: clockMinutes(ex?.start || r.start),
+      start: clockMinutes(ex?.start || routineStart(r, date)),
       duration: ex?.duration || r.duration,
       kind: "routine",
       color: r.color,
@@ -209,7 +228,7 @@ export function blocksForDay(
       start: lo,
       duration: hi - lo,
       kind: "external",
-      color: e.holiday ? "holiday" : "blue",
+      color: e.holiday ? "holiday" : "sage",
       outcome: "pending",
       allDay: e.allDay,
       free: e.free || e.holiday,
@@ -379,7 +398,9 @@ export function makeSnapshot(
   // Historic reviews use today's remaining capacity, never elapsed time from the reviewed day.
   const planningDate = date < now.day ? now.day : date;
   const sessions = s.sessions.filter((x) => x.date === date);
-  const active = s.tasks.filter((t) => t.status === "active" && !t.deletedProject);
+  const active = s.tasks.filter(
+    (t) => t.status === "active" && !t.deletedProject,
+  );
   const upcoming = active.map((t) => ({
     id: t.id,
     title: t.title,
@@ -477,9 +498,12 @@ export function makeSnapshot(
     },
     prior_review:
       s.reviews
-        .filter((r) => r.date < date)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
-        ?.assessment || null,
+        .filter((r) => r.date < date && !r.snapshot.earlier_report_changed)
+        .sort(
+          (a, b) =>
+            b.date.localeCompare(a.date) ||
+            b.createdAt.localeCompare(a.createdAt),
+        )[0]?.assessment || null,
   };
 }
 export function assess(snapshot: ReturnType<typeof makeSnapshot>): Assessment {
@@ -598,7 +622,8 @@ export function projectHealth(
   const tasks = s.tasks.filter(
     (t) =>
       t.projectId === p.id &&
-      t.status === "active" && !t.deletedProject &&
+      t.status === "active" &&
+      !t.deletedProject &&
       t.milestoneId === next.id,
   );
   const taskEstimatesKnown =

@@ -1,4 +1,11 @@
 "use client";
+import {
+  confirmReviewReplacement,
+  reviewContextBefore,
+  saveDatedReview,
+} from "@/lib/review-history";
+import { DailyReviewDialog } from "./daily-review-dialog";
+import { progressDestinations } from "@/lib/progress-update";
 import { useState } from "react";
 import {
   Sparkles,
@@ -26,7 +33,7 @@ import {
   RULE_VERSION,
   projectHealth,
 } from "@/lib/engine";
-import { PageHeading, ViewProps } from "./work-views";
+import { ViewProps } from "./work-views";
 import { deadlineEntries } from "@/lib/deadlines";
 import { evidenceKey, workspaceDay } from "@/lib/ai-freshness";
 import { Badge, Field, OutcomeSelect, Empty, SectionHead } from "./ui";
@@ -76,71 +83,31 @@ export function Progress({
   const stale = review && review.inputKey !== inputKey;
   const completed = sessions.filter((s) => s.outcome === "completed").length,
     confirmed = sessions.filter((s) => s.outcome !== "pending").length;
-  async function generate(useAI: boolean) {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const snapshot = makeSnapshot(
-        state,
-        date,
-        focus,
-        blocker,
-        accomplishment,
-      );
-      const result = useAI
-        ? await api("/api/review", {
-            state,
-            date,
-            focus,
-            blocker,
-            accomplishment,
-            commitmentKey: commitmentKey || undefined,
-          })
-        : { assessment: assess(snapshot), snapshot, version: RULE_VERSION };
-      const record: Review = {
-        id: uid(),
-        date,
-        createdAt: new Date().toISOString(),
-        source: useAI ? "ai" : "rules",
-        version: result.version,
-        inputKey,
-        focus,
-        blocker,
-        accomplishment,
-        commitmentKey: commitmentKey || undefined,
-        commitmentUpdates: result.commitmentUpdates,
-        assessment: result.assessment,
-        snapshot: result.snapshot,
-      };
-      update((s) => {
-        s.reviews.push(record);
-        audit(
-          s,
-          "Daily " + (useAI ? "AI" : "rules-based") + " assessment saved",
-          record.id,
-        );
-      });
-      notify("Review saved. Tomorrow’s planning can use this evidence.");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  const [editing, setEditing] = useState(false);
+  async function generate(_useAI: boolean) {
+    setEditing(true);
   }
   return (
     <>
-      <PageHeading
-        eyebrow="NOTICE WHAT MOVED FORWARD"
-        title="A moment to take stock."
-        subtitle="A few honest signals. A clearer next step. Then let the day be done."
-      />
+      {editing && (
+        <DailyReviewDialog
+          state={state}
+          date={date}
+          aiReady={aiReady}
+          api={api}
+          update={update}
+          onClose={() => setEditing(false)}
+        />
+      )}
+      <button className="button primary" onClick={() => setEditing(true)}>
+        Write or edit progress update
+      </button>
       <div className="review-toolbar">
         <div className="tab-row">
           {(
             [
               ["today", "Daily review"],
-              ["week", "Seven-day summary"],
+              ["week", "Weekly accumulation"],
               ["history", "Review history"],
             ] as const
           ).map(([v, l]) => (
@@ -170,226 +137,13 @@ export function Progress({
         </label>
       </div>
       {tab === "today" ? (
-        <div className="review-layout">
-          <div>
-            <section className="panel review-evidence">
-              <SectionHead
-                title="The day, as recorded"
-                subtitle={formatDate(date, {
-                  weekday: "long",
-                  month: "long",
-                  day: "numeric",
-                })}
-              />
-              <div className="review-counts">
-                <div>
-                  <strong>{sessions.length}</strong>
-                  <span>planned sessions</span>
-                </div>
-                <div>
-                  <strong>{confirmed}</strong>
-                  <span>confirmed outcomes</span>
-                </div>
-                <div>
-                  <strong>{completed}</strong>
-                  <span>completed sessions</span>
-                </div>
-              </div>
-              {sessions.length ? (
-                <div className="review-sessions">
-                  {sessions.map((s) => (
-                    <div className="review-session" key={s.id}>
-                      <div>
-                        <button
-                          className="plain"
-                          onClick={() => edit({ kind: "session", id: s.id })}
-                        >
-                          <strong>
-                            {state.tasks.find((t) => t.id === s.taskId)?.title}
-                          </strong>
-                        </button>
-                        <small>
-                          {durationLabel(s.duration)} planned ·{" "}
-                          {s.actualMinutes === null
-                            ? "actual time unknown"
-                            : durationLabel(s.actualMinutes) + " self-reported"}
-                        </small>
-                        {s.note && <p>{s.note}</p>}
-                      </div>
-                      <OutcomeSelect
-                        value={s.outcome}
-                        onChange={(v) =>
-                          setOutcome("session", s.id, date, v as Outcome)
-                        }
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="inline-empty">
-                  No sessions scheduled on this day. You can still record a
-                  brief update.
-                </div>
-              )}
-              <p className="form-hint">
-                Scheduled time is a plan. Only your confirmed outcomes are
-                evidence of what happened.
-              </p>
-            </section>
-            <section className="panel quick-check">
-              <SectionHead
-                title="Anything the records missed?"
-                subtitle="Optional. Skip what doesn’t help today’s assessment."
-              />
-              <div className="form-grid">
-                <Field label="Focus?">
-                  <select
-                    value={focus}
-                    onChange={(e) => setFocus(e.target.value)}
-                  >
-                    <option value="">Not reported</option>
-                    <option>Focused</option>
-                    <option>Mixed</option>
-                    <option>Distracted</option>
-                  </select>
-                </Field>
-                <Field
-                  label={
-                    needsBlocker
-                      ? "Main blocker?"
-                      : "Anything blocking your next step?"
-                  }
-                >
-                  <select
-                    value={
-                      [
-                        "",
-                        "Technical issue",
-                        "Waiting on someone",
-                        "Time ran short",
-                        "Unclear next step",
-                      ].includes(blocker)
-                        ? blocker
-                        : "Other"
-                    }
-                    onChange={(e) =>
-                      setBlocker(
-                        e.target.value === "Other" ? "Other" : e.target.value,
-                      )
-                    }
-                  >
-                    <option value="">None reported</option>
-                    <option>Technical issue</option>
-                    <option>Waiting on someone</option>
-                    <option>Time ran short</option>
-                    <option>Unclear next step</option>
-                    <option>Other</option>
-                  </select>
-                </Field>
-              </div>
-              {blocker === "Other" && (
-                <Field label="One sentence · optional">
-                  <input
-                    placeholder="What got in the way?"
-                    onBlur={(e) => e.target.value && setBlocker(e.target.value)}
-                    maxLength={4000}
-                  />
-                </Field>
-              )}
-              <CommitmentField
-                state={state}
-                value={commitmentKey}
-                onChange={setCommitmentKey}
-              />
-              <Field label="What moved forward, and what’s left?">
-                <input
-                  placeholder="A concrete accomplishment or important update…"
-                  maxLength={4000}
-                  value={accomplishment}
-                  onChange={(e) => setAccomplishment(e.target.value)}
-                />
-              </Field>
-              {stale && (
-                <p className="form-hint" role="status">
-                  <Badge tone="peach">Needs refresh</Badge> The saved review is
-                  still here. Refresh when you’re ready to use the new evidence.
-                </p>
-              )}
-              <div className="review-generate">
-                <button
-                  className="button primary"
-                  onClick={() => generate(aiReady)}
-                  disabled={busy}
-                >
-                  <Sparkles size={16} />
-                  {busy
-                    ? "Reviewing your day…"
-                    : aiReady
-                      ? review
-                        ? "Refresh review with AI"
-                        : "Review my day with AI"
-                      : review
-                        ? "Refresh local review"
-                        : "Create evidence review"}
-                </button>
-                {aiReady && (
-                  <button
-                    className="text-button"
-                    disabled={busy}
-                    onClick={() => generate(false)}
-                  >
-                    Use local rules
-                  </button>
-                )}
-              </div>
-              <small className="muted">
-                {aiReady
-                  ? "This sends the day’s structured records to your configured AI provider."
-                  : "AI is not connected. The local review uses transparent calculations and recorded evidence."}{" "}
-                {review ? "Earlier versions remain in history." : ""}
-              </small>
-              {error && (
-                <div className="error" role="alert">
-                  {error}
-                </div>
-              )}
-            </section>
-          </div>
-          <aside>
-            {review ? (
-              <Report review={review} />
-            ) : (
-              <div className="review-placeholder">
-                <div className="report-illustration">
-                  <span className="sun-doodle">☼</span>
-                  <div>
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                  <Check size={20} />
-                </div>
-                <h2>Progress deserves perspective.</h2>
-                <p>
-                  Your daily review will connect what happened with what comes
-                  next.
-                </p>
-                <div>
-                  <Check size={14} />
-                  Meaningful work, not a productivity score
-                </div>
-                <div>
-                  <Check size={14} />
-                  Clear evidence and honest uncertainty
-                </div>
-                <div>
-                  <Check size={14} />
-                  One practical next step
-                </div>
-              </div>
-            )}
-          </aside>
-        </div>
+        review ? (
+          <Report review={review} />
+        ) : (
+          <p>
+            No confirmed report for this date. Write an update to get started.
+          </p>
+        )
       ) : tab === "history" ? (
         <div className="history-list">
           {state.reviews.length ? (
@@ -437,6 +191,37 @@ export function Progress({
 }
 export function Report({ review }: { review: Review }) {
   const a = review.assessment;
+  if (
+    ["confirmed-progress-v1", "confirmed-progress-v2"].includes(review.version)
+  )
+    return (
+      <article className="report">
+        <h2>{formatDate(review.date, { month: "long", day: "numeric" })}</h2>
+        {review.version !== "confirmed-progress-v2" && (
+          <p style={{ whiteSpace: "pre-wrap" }}>{review.accomplishment}</p>
+        )}
+        {Array.isArray(review.snapshot.verified_updates) &&
+          review.snapshot.verified_updates.map(
+            (
+              item: { key: string; note: string; label?: string },
+              index: number,
+            ) => (
+              <div key={index}>
+                <small>{item.label || "Daily report"}</small>
+                <p style={{ whiteSpace: "pre-wrap" }}>{item.note}</p>
+              </div>
+            ),
+          )}
+        {typeof review.snapshot.daily_overview === "string" && (
+          <section>
+            <h3>Today’s overall progress</h3>
+            <p style={{ whiteSpace: "pre-wrap" }}>
+              {review.snapshot.daily_overview}
+            </p>
+          </section>
+        )}
+      </article>
+    );
   return (
     <article className="report">
       <div className="report-head">
@@ -462,6 +247,13 @@ export function Report({ review }: { review: Review }) {
       >
         {a.pacing_status.replaceAll("-", " ")}
       </Badge>
+      {typeof review.snapshot.earlier_report_changed === "string" && (
+        <p className="form-hint" role="status">
+          An earlier progress report changed (
+          {review.snapshot.earlier_report_changed}). Your answers are preserved;
+          this assessment needs refresh.
+        </p>
+      )}
       <h3 className="report-summary">{a.summary}</h3>
       <div className="report-section">
         <span>TIME USE</span>
@@ -528,161 +320,47 @@ export function WeeklyProgress({
   state: State;
   date: string;
 }) {
-  const weekStart = addDays(date, -6),
-    weekReviews = state.reviews.filter(
-      (r) => r.date >= weekStart && r.date <= date,
-    ),
-    weekSessions = state.sessions.filter(
-      (s) => s.date >= weekStart && s.date <= date,
-    );
-  const outcomes = weekSessions.filter(
-    (session) => session.outcome !== "pending",
+  const weekStart = addDays(date, -6);
+  const reports = state.reviews
+    .filter((r) => r.date >= weekStart && r.date <= date)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const destinations = new Map(
+    progressDestinations(state).map((d) => [d.key, d.label]),
   );
-  const completed = outcomes.filter(
-    (session) => session.outcome === "completed",
-  ).length;
-  const partial = outcomes.filter((session) =>
-    session.outcome.startsWith("partial"),
-  ).length;
-  const lookAhead = addDays(date, 14);
-  const commitments = deadlineEntries(state)
-    .filter((entry) => !entry.resolved && entry.date <= lookAhead)
-    .sort(
-      (a, b) =>
-        a.date.localeCompare(b.date) ||
-        (a.time ?? "23:59").localeCompare(b.time ?? "23:59") ||
-        a.title.localeCompare(b.title),
-    );
   return (
-    <>
-      <div className="panel weekly-panel">
-        <span className="eyebrow">
-          {formatDate(weekStart)} — {formatDate(date)}
-        </span>
-        <h2>Week in review</h2>
-        <p>
-          {outcomes.length
-            ? `${completed} of ${outcomes.length} sessions with recorded outcomes were marked complete, and ${partial} made partial progress.`
-            : "No session outcomes were recorded this week."}
-        </p>
-        <div className="review-counts">
-          <div>
-            <strong>
-              {weekSessions.filter((s) => s.outcome !== "pending").length}
-            </strong>
-            <span>confirmed session outcomes</span>
-          </div>
-          <div>
-            <strong>
-              {state.tasks.filter(
-                (t) =>
-                  t.completedAt &&
-                  t.completedAt.slice(0, 10) >= weekStart &&
-                  t.completedAt.slice(0, 10) <= date,
-              ).length +
-                state.routineRecords.filter(
-                  (r) =>
-                    r.date >= weekStart &&
-                    r.date <= date &&
-                    r.outcome === "completed",
-                ).length}
-            </strong>
-            <span>tasks and routines completed</span>
-          </div>
-          <div>
-            <strong>{new Set(weekReviews.map((r) => r.date)).size}</strong>
-            <span>days reviewed</span>
-          </div>
-        </div>
-        <p>
-          {weekSessions.filter((s) => s.outcome === "blocked").length} blocked
-          sessions ·{" "}
-          {weekSessions.filter((s) => s.outcome === "pending").length}{" "}
-          unconfirmed sessions. Planned duration has not been counted as actual
-          work.
-        </p>
-        <p>
-          {
-            state.routineRecords.filter(
-              (r) =>
-                r.date >= weekStart &&
-                r.date <= date &&
-                r.outcome === "completed",
-            ).length
-          }{" "}
-          routine occurrences confirmed completed.
-        </p>
-      </div>
-      <section className="panel weekly-panel">
-        <h2>Next steps</h2>
-        {commitments.length ? (
-          <ul>
-            {commitments.map((entry) => (
-              <li key={entry.kind + ":" + entry.id}>
-                <strong>{entry.title}</strong>
-                {" · "}
-                {formatDate(entry.date)}
-                {entry.time && " at " + displayTime(entry.time)}
-                {" · "}
-                {entry.date < date
-                  ? "Overdue. Check what remains."
-                  : entry.date === date
-                    ? "Due today. Check what remains."
-                    : entry.date <= addDays(date, 7)
-                      ? "Plan time before it’s due."
-                      : "Check whether work needs to start next week."}
-              </li>
+    <section className="weekly-panel">
+      <h2>
+        Weekly progress · {formatDate(weekStart)} — {formatDate(date)}
+      </h2>
+      <p>Your confirmed daily updates, accumulated in full.</p>
+      {reports.length ? (
+        reports.map((r) => (
+          <article key={r.id} className="report">
+            <h3>{formatDate(r.date)}</h3>
+            <p style={{ whiteSpace: "pre-wrap" }}>
+              {typeof r.snapshot.confirmed_interpretation === "string"
+                ? r.snapshot.confirmed_interpretation
+                : r.accomplishment}
+            </p>
+            {typeof r.snapshot.daily_overview === "string" && (
+              <>
+                <h4>Overall progress</h4>
+                <p style={{ whiteSpace: "pre-wrap" }}>
+                  {r.snapshot.daily_overview}
+                </p>
+              </>
+            )}
+            {(r.commitmentUpdates ?? []).map((u, i) => (
+              <div key={i}>
+                <strong>{destinations.get(u.key) ?? u.key}</strong>
+                <p style={{ whiteSpace: "pre-wrap" }}>{u.note}</p>
+              </div>
             ))}
-          </ul>
-        ) : (
-          <p>No open deadlines or milestones are due in the next two weeks.</p>
-        )}
-      </section>
-      <div className="weekly-projects">
-        {state.projects
-          .filter((p) => p.status === "active")
-          .map((p) => (
-            <div className="panel" key={p.id}>
-              <Badge>{projectHealth(state, p, date).label}</Badge>
-              <h3>{p.title}</h3>
-              <p>{projectHealth(state, p, date).reason}</p>
-            </div>
-          ))}
-      </div>
-    </>
-  );
-}
-
-export function CommitmentField({
-  state,
-  value,
-  onChange,
-  disabled,
-}: {
-  state: State;
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}) {
-  const entries = deadlineEntries(state).filter((entry) => !entry.resolved);
-  if (!entries.length) return null;
-  return (
-    <Field label="Link this update to a commitment · optional">
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-      >
-        <option value="">General update</option>
-        {entries.map((entry) => {
-          const key = entry.kind + ":" + entry.id;
-          return (
-            <option key={key} value={key}>
-              {entry.title} · {formatDate(entry.date)}
-            </option>
-          );
-        })}
-      </select>
-    </Field>
+          </article>
+        ))
+      ) : (
+        <p>No confirmed updates in this period.</p>
+      )}
+    </section>
   );
 }

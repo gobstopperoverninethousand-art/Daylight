@@ -68,12 +68,14 @@ export function Dialog({
   children,
   onClose,
   wide = false,
+  closeOnly = false,
 }: {
   title: string;
   subtitle?: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  closeOnly?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -92,10 +94,10 @@ export function Dialog({
       className={"dialog " + (wide ? "wide" : "")}
       onCancel={(event) => {
         event.preventDefault();
-        onClose();
+        if (!closeOnly) onClose();
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (!closeOnly && e.target === e.currentTarget) onClose();
       }}
     >
       <div className="dialog-head">

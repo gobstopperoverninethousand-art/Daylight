@@ -709,3 +709,126 @@ test("commitment evidence follows linked sessions and excludes unrelated work", 
   assert.equal(history.completed_session_count, 1);
   assert.equal(history.recent_sessions[0].focus, "Focused");
 });
+
+test("routine history survives pause, resume, and deletion while future occurrences are removed", () => {
+  const s = state();
+  s.routines.push({
+    id: "history",
+    title: "History",
+    days: [0, 1, 2, 3, 4, 5, 6],
+    recurrenceUnit: "days",
+    start: "09:00",
+    duration: 30,
+    since: "2026-11-01",
+    until: null,
+    paused: true,
+    pausePeriods: [{ start: "2026-11-10", end: null }],
+    color: "sage",
+  });
+  s.routineRecords.push({
+    routineId: "history",
+    date: "2026-11-08",
+    outcome: "completed",
+    note: "",
+  });
+  assert.equal(
+    blocksForDay(s, "2026-11-08").find((x) => x.sourceId === "history")
+      ?.outcome,
+    "completed",
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-09").find((x) => x.sourceId === "history")
+      ?.outcome,
+    "pending",
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-10").some((x) => x.sourceId === "history"),
+    false,
+  );
+  const routine = s.routines[0];
+  routine.paused = false;
+  routine.pausePeriods![0].end = "2026-11-12";
+  assert.equal(
+    blocksForDay(s, "2026-11-11").some((x) => x.sourceId === "history"),
+    false,
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-12").some((x) => x.sourceId === "history"),
+    true,
+  );
+  assert.ok(
+    outboundEvents(s, day)
+      .find((x) => x.key === "routine:history")!
+      .event.recurrence!.some((x) => x.includes("20261111")),
+  );
+  routine.deletedAt = "2026-11-13";
+  assert.equal(
+    blocksForDay(s, "2026-11-12").some((x) => x.sourceId === "history"),
+    true,
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-13").some((x) => x.sourceId === "history"),
+    false,
+  );
+  assert.match(
+    outboundEvents(s, day).find((x) => x.key === "routine:history")!.event
+      .recurrence![0],
+    /UNTIL=20261113/,
+  );
+});
+
+test("routine weekday times and effective dates preserve history and sync phased recurrences", () => {
+  const s = state();
+  s.routines.push({
+    id: "varied",
+    title: "Practice",
+    days: [1, 3],
+    recurrenceInterval: 2,
+    recurrenceUnit: "weeks",
+    start: "09:00",
+    duration: 30,
+    since: "2026-11-02",
+    until: null,
+    paused: false,
+    color: "sage",
+    timeSchedules: [
+      {
+        effective: "2026-11-02",
+        start: "09:00",
+        weekdays: [null, null, null, null, null, null, null],
+      },
+      {
+        effective: "2026-11-10",
+        start: "10:00",
+        weekdays: [null, "08:00", null, "15:00", null, null, null],
+      },
+    ],
+  });
+  assert.equal(
+    blocksForDay(s, "2026-11-02").find((x) => x.sourceId === "varied")?.start,
+    540,
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-16").find((x) => x.sourceId === "varied")?.start,
+    480,
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-18").find((x) => x.sourceId === "varied")?.start,
+    900,
+  );
+  assert.equal(
+    blocksForDay(s, "2026-11-11").some((x) => x.sourceId === "varied"),
+    false,
+  );
+  const events = outboundEvents(s, day).filter((x) =>
+    x.key.startsWith("routine:varied:"),
+  );
+  const monday = events.find((x) => x.key === "routine:varied:2026-11-10:1")!;
+  assert.match(monday.event.start!.dateTime!, /^2026-11-16T/);
+  assert.match(monday.event.recurrence![0], /INTERVAL=2.*BYDAY=MO/);
+  const wednesday = events.find(
+    (x) => x.key === "routine:varied:2026-11-10:3",
+  )!;
+  assert.match(wednesday.event.start!.dateTime!, /^2026-11-18T/);
+  assert.equal(stateSchema.safeParse(s).success, true);
+});

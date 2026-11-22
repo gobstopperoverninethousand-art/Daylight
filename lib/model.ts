@@ -82,6 +82,19 @@ export const routineSchema = z
     since: daySchema,
     until: daySchema.nullable(),
     paused: z.boolean(),
+    timeSchedules: z
+      .array(
+        z.object({
+          effective: daySchema,
+          start: timeSchema,
+          weekdays: z.array(timeSchema.nullable()).length(7),
+        }),
+      )
+      .optional(),
+    deletedAt: daySchema.optional(),
+    pausePeriods: z
+      .array(z.object({ start: daySchema, end: daySchema.nullable() }))
+      .optional(),
     color: z.enum(["sage", "peach", "lavender", "blue"]),
   })
   .refine(
@@ -184,6 +197,7 @@ export const settingsSchema = z
     workEnd: timeSchema,
     workDays: z.array(z.number().int().min(0).max(6)),
     horizon: z.number().int().min(1).max(30),
+    blockOverlapView: z.enum(["stacked", "sideBySide"]).default("sideBySide"),
     calendarId: z.string(),
     calendarName: z.string(),
     syncHolidays: z.boolean().default(true),
@@ -211,7 +225,7 @@ export const assessmentSchema = z.object({
 });
 export const commitmentUpdateSchema = z.object({
   key: z.string().max(180),
-  note: z.string().trim().min(1).max(600),
+  note: z.string().trim().min(1),
 });
 export const reviewSchema = z.object({
   id,
@@ -222,7 +236,7 @@ export const reviewSchema = z.object({
   inputKey: z.string().optional(),
   focus: z.string().max(80),
   blocker: note,
-  accomplishment: note,
+  accomplishment: z.string(),
   commitmentKey: z.string().max(180).optional(),
   commitmentUpdates: z.array(commitmentUpdateSchema).optional(),
   assessment: assessmentSchema,
@@ -251,7 +265,7 @@ export const stateSchema = z.object({
     .array(
       z.object({
         id,
-        kind: z.enum(["priorities", "milestones", "tasks"]),
+        kind: z.enum(["priorities", "extras", "milestones", "tasks"]),
         createdAt: z.string(),
         version: z.string(),
         inputKey: z.string().optional(),
@@ -283,6 +297,12 @@ export function hoursLabel(minutes: number | null) {
 export const uid = () => crypto.randomUUID();
 export function dayKey(d = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+export function routineStart(routine: Routine, date: string): string {
+  const schedule = routine.timeSchedules
+    ?.filter((item) => item.effective <= date)
+    .sort((a, b) => b.effective.localeCompare(a.effective))[0];
+  return schedule?.weekdays[weekday(date)] || schedule?.start || routine.start;
 }
 export function addDays(day: string, n: number): string {
   const d = new Date(day + "T12:00:00");
@@ -339,6 +359,7 @@ export function emptyState(): State {
       workEnd: "18:00",
       workDays: [1, 2, 3, 4, 5],
       horizon: 7,
+      blockOverlapView: "sideBySide",
       calendarId: "primary",
       syncHolidays: true,
       calendarName: "Primary calendar",
@@ -370,13 +391,28 @@ export function finishTask(state: State, id: string, done = true): void {
     id,
   );
 }
-export function removeProject(state: State, projectId: string, today: string, minute: number) {
+export function removeProject(
+  state: State,
+  projectId: string,
+  today: string,
+  minute: number,
+) {
   const project = state.projects.find((entry) => entry.id === projectId);
   if (!project) return false;
 
-  const linkedDeadlines = new Set(state.deadlines.filter((entry) => entry.projectId === projectId).map((entry) => entry.id));
-  const removedDeadlines = new Set(state.deadlines.filter((entry) => linkedDeadlines.has(entry.id) && entry.date >= today).map((entry) => entry.id));
-  state.deadlines = state.deadlines.filter((entry) => !removedDeadlines.has(entry.id));
+  const linkedDeadlines = new Set(
+    state.deadlines
+      .filter((entry) => entry.projectId === projectId)
+      .map((entry) => entry.id),
+  );
+  const removedDeadlines = new Set(
+    state.deadlines
+      .filter((entry) => linkedDeadlines.has(entry.id) && entry.date >= today)
+      .map((entry) => entry.id),
+  );
+  state.deadlines = state.deadlines.filter(
+    (entry) => !removedDeadlines.has(entry.id),
+  );
   for (const deadline of state.deadlines) {
     if (!linkedDeadlines.has(deadline.id)) continue;
     deadline.projectId = null;
@@ -384,34 +420,61 @@ export function removeProject(state: State, projectId: string, today: string, mi
     deadline.status = "resolved";
   }
   const historicalMarkers = [
-    ...project.milestones.filter((entry) => entry.approved).map((entry) => ({ ...entry, historicalKind: "milestone" as const })),
-    { id: project.id, title: project.title, date: project.deadline, reason: "", historicalKind: "project" as const },
+    ...project.milestones
+      .filter((entry) => entry.approved)
+      .map((entry) => ({ ...entry, historicalKind: "milestone" as const })),
+    {
+      id: project.id,
+      title: project.title,
+      date: project.deadline,
+      reason: "",
+      historicalKind: "project" as const,
+    },
   ];
   for (const marker of historicalMarkers) {
     if (marker.date >= today) continue;
     state.deadlines.push({
-      id: marker.id, title: marker.title, date: marker.date, time: null,
-      status: "resolved", projectId: null, notes: marker.reason,
-      deletedProject: project.title, historicalKind: marker.historicalKind,
+      id: marker.id,
+      title: marker.title,
+      date: marker.date,
+      time: null,
+      status: "resolved",
+      projectId: null,
+      notes: marker.reason,
+      deletedProject: project.title,
+      historicalKind: marker.historicalKind,
     });
   }
 
-  const milestoneIds = new Set(project.milestones.map((milestone) => milestone.id));
-  const linkedTasks = new Set(state.tasks.filter((task) =>
-    task.projectId === projectId ||
-    (!task.projectId && task.generatedForProjectId === projectId) ||
-    (task.milestoneId && milestoneIds.has(task.milestoneId)) ||
-    (task.deadlineId && linkedDeadlines.has(task.deadlineId)),
-  ).map((task) => task.id));
-  state.sessions = state.sessions.filter((session) =>
-    !linkedTasks.has(session.taskId) ||
-    session.date < today ||
-    (session.date === today && clockMinutes(session.start) < minute),
+  const milestoneIds = new Set(
+    project.milestones.map((milestone) => milestone.id),
   );
-  const historicalTasks = new Set(state.sessions.map((session) => session.taskId));
-  state.tasks = state.tasks.filter((task) => !linkedTasks.has(task.id) || historicalTasks.has(task.id));
+  const linkedTasks = new Set(
+    state.tasks
+      .filter(
+        (task) =>
+          task.projectId === projectId ||
+          (!task.projectId && task.generatedForProjectId === projectId) ||
+          (task.milestoneId && milestoneIds.has(task.milestoneId)) ||
+          (task.deadlineId && linkedDeadlines.has(task.deadlineId)),
+      )
+      .map((task) => task.id),
+  );
+  state.sessions = state.sessions.filter(
+    (session) =>
+      !linkedTasks.has(session.taskId) ||
+      session.date < today ||
+      (session.date === today && clockMinutes(session.start) < minute),
+  );
+  const historicalTasks = new Set(
+    state.sessions.map((session) => session.taskId),
+  );
+  state.tasks = state.tasks.filter(
+    (task) => !linkedTasks.has(task.id) || historicalTasks.has(task.id),
+  );
   for (const task of state.tasks) {
-    if (task.deadlineId && removedDeadlines.has(task.deadlineId)) task.deadlineId = null;
+    if (task.deadlineId && removedDeadlines.has(task.deadlineId))
+      task.deadlineId = null;
     if (!linkedTasks.has(task.id)) continue;
     task.projectId = null;
     task.milestoneId = null;

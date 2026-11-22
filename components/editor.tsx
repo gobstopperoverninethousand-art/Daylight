@@ -15,6 +15,7 @@ import {
   finishTask,
   removeTask,
   removeProject,
+  routineStart,
 } from "@/lib/model";
 import { overlap, zonedParts } from "@/lib/engine";
 import { Dialog, Field, DAYS, OUTCOMES } from "./ui";
@@ -77,7 +78,8 @@ export function Editor({
     [chosenTask, setChosenTask] = useState(
       session?.taskId ||
         modal.taskId ||
-        state.tasks.find((t) => t.status === "active" && !t.deletedProject)?.id ||
+        state.tasks.find((t) => t.status === "active" && !t.deletedProject)
+          ?.id ||
         "",
     ),
     [untimed, setUntimed] = useState(!!routine?.untimed);
@@ -176,8 +178,40 @@ export function Editor({
             since: str("since"),
             until: str("until") || null,
             paused: routine?.paused || false,
+            timeSchedules: routine?.timeSchedules,
+            pausePeriods: routine?.pausePeriods,
+            deletedAt: routine?.deletedAt,
             color: str("color") as "sage" | "peach" | "blue" | "lavender",
           };
+          if (!value.untimed) {
+            const effective = routine ? str("timeEffective") : value.since;
+            if (!effective)
+              throw new Error("Choose when the time change takes effect.");
+            const weekdays = DAYS.map((_, i) => str(`weekdayTime${i}`) || null);
+            for (const time of [
+              value.start,
+              ...weekdays.filter((x): x is string => !!x),
+            ]) {
+              if (clockMinutes(time) + value.duration > 1440)
+                throw new Error("Routine times must end on the same day.");
+            }
+            const previous =
+              routine?.timeSchedules ||
+              (routine
+                ? [
+                    {
+                      effective: routine.since,
+                      start: routine.start,
+                      weekdays: Array(7).fill(null),
+                    },
+                  ]
+                : []);
+            value.timeSchedules = [
+              ...previous.filter((entry) => entry.effective !== effective),
+              { effective, start: value.start, weekdays },
+            ].sort((a, b) => a.effective.localeCompare(b.effective));
+            if (routine) value.start = routine.start;
+          }
           if (value.until && value.until < value.since)
             throw new Error("End date must be on or after the start date.");
           const idx = s.routines.findIndex((x) => x.id === recordId);
@@ -304,10 +338,10 @@ export function Editor({
       type === "project"
         ? `Delete “${project?.title}”? Past calendar records will be kept. Upcoming project deadlines, milestones, sessions, and unscheduled project tasks will be removed.`
         : type === "task"
-        ? "Delete this task and all of its scheduled sessions? This cannot be undone. Google events will be removed on your next sync."
-        : "Remove this " +
-          type +
-          "? This cannot be undone. Google changes apply only on your next sync.";
+          ? "Delete this task and all of its scheduled sessions? This cannot be undone. Google events will be removed on your next sync."
+          : "Remove this " +
+            type +
+            "? This cannot be undone. Google changes apply only on your next sync.";
     if (type !== "session" && !confirm(message)) return;
     if (
       type === "project" &&
@@ -317,7 +351,10 @@ export function Editor({
     try {
       update((s) => {
         if (type === "project") {
-          const { day, minute } = zonedParts(new Date().toISOString(), s.settings.timezone);
+          const { day, minute } = zonedParts(
+            new Date().toISOString(),
+            s.settings.timezone,
+          );
           if (!removeProject(s, modal.id!, day, minute))
             throw new Error("Project not found.");
         }
@@ -357,13 +394,17 @@ export function Editor({
     }
   }
   const sessionTask = state.tasks.find((entry) => entry.id === session?.taskId);
-  const linkedTask = type === "session"
-    ? state.tasks.find((entry) => entry.id === chosenTask)
-    : task;
-  const linkedDeadlineId = type === "task" && deadlineChoice.startsWith("deadline:")
-    ? deadlineChoice.slice(9)
-    : linkedTask?.deadlineId;
-  const linkedDeadline = state.deadlines.find((entry) => entry.id === linkedDeadlineId);
+  const linkedTask =
+    type === "session"
+      ? state.tasks.find((entry) => entry.id === chosenTask)
+      : task;
+  const linkedDeadlineId =
+    type === "task" && deadlineChoice.startsWith("deadline:")
+      ? deadlineChoice.slice(9)
+      : linkedTask?.deadlineId;
+  const linkedDeadline = state.deadlines.find(
+    (entry) => entry.id === linkedDeadlineId,
+  );
   const archivedProject = state.projects.find(
     (entry) =>
       entry.status === "completed" &&
@@ -372,19 +413,32 @@ export function Editor({
           (entry.id === (type === "task" ? projectId : linkedTask?.projectId) ||
             entry.id === linkedDeadline?.projectId))),
   );
-  const deletedProject = task?.deletedProject ?? deadline?.deletedProject ?? sessionTask?.deletedProject;
+  const deletedProject =
+    task?.deletedProject ??
+    deadline?.deletedProject ??
+    sessionTask?.deletedProject;
   if (deletedProject) {
-    const historicalTitle = task?.title ?? deadline?.title ?? sessionTask?.title;
+    const historicalTitle =
+      task?.title ?? deadline?.title ?? sessionTask?.title;
     const historicalTask = task ?? sessionTask;
     const canDeleteHistoricalRecord =
-      !!historicalTask || !!(deadline?.deletedProject && deadline.historicalKind);
+      !!historicalTask ||
+      !!(deadline?.deletedProject && deadline.historicalKind);
     return (
-      <Dialog title="Deleted project" subtitle={deletedProject} onClose={onClose}>
+      <Dialog
+        title="Deleted project"
+        subtitle={deletedProject}
+        onClose={onClose}
+      >
         <div className="editor-form">
           <p>{historicalTitle}</p>
           <p>This record was kept in your calendar history.</p>
           <div className="dialog-actions">
-            <button type="button" className="button secondary" onClick={onClose}>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onClose}
+            >
               Close
             </button>
             {canDeleteHistoricalRecord && (
@@ -407,7 +461,11 @@ export function Editor({
                       audit(state, "Deleted past project record", deadline.id);
                     }
                   });
-                  onSaved(historicalTask ? "Past task and sessions deleted." : "Past milestone deleted.");
+                  onSaved(
+                    historicalTask
+                      ? "Past task and sessions deleted."
+                      : "Past milestone deleted.",
+                  );
                   onClose();
                 }}
               >
@@ -696,7 +754,15 @@ export function Editor({
                     type="time"
                     name="start"
                     required
-                    defaultValue={routine?.start || "18:30"}
+                    defaultValue={
+                      routine?.timeSchedules
+                        ?.filter((entry) => entry.effective <= dayKey())
+                        .sort((a, b) =>
+                          b.effective.localeCompare(a.effective),
+                        )[0]?.start ||
+                      routine?.start ||
+                      "18:30"
+                    }
                   />
                 </Field>
               )}
@@ -715,6 +781,41 @@ export function Editor({
                 />
               </Field>
             </div>
+            {!untimed && (
+              <details>
+                <summary>Set a different time for each day</summary>
+                <p className="form-hint">
+                  Leave a day blank to use the default start time.
+                </p>
+                <div className="form-grid">
+                  {DAYS.map((day, i) => (
+                    <Field key={day} label={day}>
+                      <input
+                        type="time"
+                        name={`weekdayTime${i}`}
+                        defaultValue={
+                          routine?.timeSchedules
+                            ?.filter((entry) => entry.effective <= dayKey())
+                            .sort((a, b) =>
+                              b.effective.localeCompare(a.effective),
+                            )[0]?.weekdays[i] || ""
+                        }
+                      />
+                    </Field>
+                  ))}
+                </div>
+              </details>
+            )}
+            {routine && !untimed && (
+              <Field label="Apply time changes from">
+                <input
+                  type="date"
+                  name="timeEffective"
+                  required
+                  defaultValue={dayKey()}
+                />
+              </Field>
+            )}
             <fieldset className="days-field">
               <legend>Repeats on</legend>
               <div className="day-options">
@@ -782,8 +883,9 @@ export function Editor({
             </Field>
             {isEdit && (
               <p className="form-hint">
-                Edits apply to the series. For a one-off change, open an
-                occurrence in the planner.
+                Time changes apply from the chosen date. Other edits apply to
+                the series. For a one-off change, open an occurrence in the
+                planner.
               </p>
             )}
           </>
@@ -921,7 +1023,9 @@ export function Editor({
                 </option>
                 {state.tasks
                   .filter(
-                    (t) => (t.status === "active" && !t.deletedProject) || t.id === session?.taskId,
+                    (t) =>
+                      (t.status === "active" && !t.deletedProject) ||
+                      t.id === session?.taskId,
                   )
                   .map((t) => (
                     <option key={t.id} value={t.id}>
@@ -1039,7 +1143,9 @@ export function Editor({
                     type="time"
                     name="start"
                     required
-                    defaultValue={occurrence?.start || routine.start}
+                    defaultValue={
+                      occurrence?.start || routineStart(routine, modal.date!)
+                    }
                   />
                 </Field>
                 <Field label="Duration · minutes">
@@ -1084,10 +1190,16 @@ export function Editor({
               </button>
             )}
           {isEdit &&
-            ["task", "session", "deadline", "milestone", "project"].includes(type) && (
+            ["task", "session", "deadline", "milestone", "project"].includes(
+              type,
+            ) && (
               <button
                 type="button"
-                className={type === "project" ? "button secondary danger" : "icon-button danger"}
+                className={
+                  type === "project"
+                    ? "button secondary danger"
+                    : "icon-button danger"
+                }
                 onClick={remove}
                 aria-label={"Delete " + type}
               >

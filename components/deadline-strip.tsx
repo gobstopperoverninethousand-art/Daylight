@@ -20,7 +20,6 @@ export function DeadlineStrip({
   const entries = deadlineEntries(state)
     .filter(
       (entry) =>
-        !entry.resolved &&
         (!projectId || entry.projectId === projectId) &&
         (kind === "high" ? entry.high : !kind || entry.kind === kind),
     )
@@ -81,68 +80,87 @@ export function DeadlineStrip({
           tabIndex={0}
         >
           {[
-            { label: "Overdue", items: entries.filter((entry) => entry.date < today) },
-            { label: "Due within 7 days", items: entries.filter((entry) => entry.date >= today && entry.date <= addDays(today, 7)) },
-            { label: "Due later", items: entries.filter((entry) => entry.date > addDays(today, 7)) },
-          ].filter((group) => group.items.length).map((group) => (
-          <div className="deadline-date-group" key={group.label}>
-            <h3>{group.label}</h3>
-            <div className="deadline-date-cards">
-          {group.items.map((entry) => (
-            <button
-              className="planner-item-card deadline-strip-card"
-              key={entry.kind + ":" + entry.id}
-              onClick={() =>
-                edit({
-                  kind: entry.kind,
-                  id: entry.id,
-                  projectId:
-                    entry.kind === "milestone"
-                      ? (entry.projectId ?? undefined)
-                      : undefined,
-                })
-              }
-            >
-              <span className="strip-card-date">
-                {formatDate(entry.date, {
-                  weekday: "short",
-                  month: "short",
-                  day: "numeric",
-                })}
-                {entry.time ? " · " + displayTime(entry.time) : ""}
-              </span>
-              <strong>{entry.title}</strong>
-              <span>
-                {entry.kind === "milestone"
-                  ? "Milestone"
-                  : entry.kind === "project"
-                    ? "Project deadline"
-                    : "Deadline"}
-                {entry.kind !== "project" && entry.projectId
-                  ? " · " +
-                    (state.projects.find((p) => p.id === entry.projectId)
-                      ?.title || "")
-                  : ""}
-              </span>
-              {(entry.high || entry.date <= today) && (
-                <small>
-                  {[
-                    entry.date < today
-                      ? "Past due"
-                      : entry.date === today
-                        ? "Due today"
-                        : "",
-                    entry.high ? "High priority" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </small>
-              )}
-            </button>
-          ))}
-            </div>
-          </div>
-          ))}
+            {
+              label: "Overdue",
+              items: entries.filter((entry) => !entry.resolved && entry.date < today),
+            },
+            {
+              label: "Due within 7 days",
+              items: entries.filter(
+                (entry) =>
+                  entry.date >= today && entry.date <= addDays(today, 7),
+              ),
+            },
+            {
+              label: "Due later",
+              items: entries.filter((entry) => entry.date > addDays(today, 7)),
+            },
+          ]
+            .filter((group) => group.items.length)
+            .map((group) => (
+              <div className="deadline-date-group" key={group.label}>
+                <h3>{group.label}</h3>
+                <div className="deadline-date-cards">
+                  {group.items.map((entry) => (
+                    <button
+                      className={`planner-item-card deadline-strip-card ${entry.resolved ? "deadline-completed" : ""}`}
+                      key={entry.kind + ":" + entry.id}
+                      onClick={() =>
+                        edit({
+                          kind: entry.kind,
+                          id: entry.id,
+                          projectId:
+                            entry.kind === "milestone"
+                              ? (entry.projectId ?? undefined)
+                              : undefined,
+                        })
+                      }
+                    >
+                      <span className="strip-card-date">
+                        {formatDate(entry.date, {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                        {entry.time ? " · " + displayTime(entry.time) : ""}
+                      </span>
+                      <strong>
+                        {entry.resolved ? "✓ " : ""}
+                        {entry.title}
+                      </strong>
+                      <span>
+                        {entry.resolved ? "Completed · " : ""}
+                        {entry.kind === "milestone"
+                          ? "Milestone"
+                          : entry.kind === "project"
+                            ? "Project deadline"
+                            : "Deadline"}
+                        {entry.kind !== "project" && entry.projectId
+                          ? " · " +
+                            (state.projects.find(
+                              (p) => p.id === entry.projectId,
+                            )?.title || "")
+                          : ""}
+                      </span>
+                      {(entry.high || entry.date <= today) && (
+                        <small>
+                          {[
+                            entry.date < today
+                              ? "Past due"
+                              : entry.date === today
+                                ? "Due today"
+                                : "",
+                            entry.high ? "High priority" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </small>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
         </div>
       ) : (
         <p className="planner-strip-empty">No deadlines match these filters.</p>

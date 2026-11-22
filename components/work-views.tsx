@@ -28,6 +28,7 @@ import {
   audit,
   finishTask,
   hoursLabel,
+  routineStart,
 } from "@/lib/model";
 import { projectHealth, scheduledTaskIds, taskDue } from "@/lib/engine";
 
@@ -58,13 +59,6 @@ export function Tasks({ state, update, edit, notify }: ViewProps) {
   );
   return (
     <>
-      <PageHeading
-        eyebrow="SMALL STEPS, REAL PROGRESS"
-        title="Your work, in one place."
-        subtitle="Capture it once. Give it the time it deserves."
-        action={() => edit({ kind: "task" })}
-        label="New task"
-      />
       <div className="list-panel">
         <div className="list-toolbar">
           <div className="tab-row">
@@ -248,13 +242,6 @@ export function Deadlines({ state, update, edit, notify }: ViewProps) {
     .sort((a, b) => a.date.localeCompare(b.date));
   return (
     <>
-      <PageHeading
-        eyebrow="KEEP THE IMPORTANT DATES IN SIGHT"
-        title="A little foresight."
-        subtitle="Deadlines are commitments. Tasks are how you get there."
-        action={() => edit({ kind: "deadline" })}
-        label="New deadline"
-      />
       <div className="section-head">
         <h2>
           Upcoming deadlines{" "}
@@ -430,18 +417,13 @@ export function Deadlines({ state, update, edit, notify }: ViewProps) {
   );
 }
 export function Routines({ state, update, edit, notify }: ViewProps) {
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const routines = state.routines.filter((r) => !r.deletedAt);
   return (
     <>
-      <PageHeading
-        eyebrow="STEADY RHYTHMS, LESS REPLANNING"
-        title="Make space for your rhythms."
-        subtitle="Fixed days, fixed times. Your routines are already on the calendar."
-        action={() => edit({ kind: "routine" })}
-        label="New routine"
-      />
-      {state.routines.length ? (
+      {routines.length ? (
         <div className="routine-grid">
-          {state.routines.map((r) => (
+          {routines.map((r) => (
             <article
               className={"routine-card " + (r.paused ? "paused" : "")}
               key={r.id}
@@ -467,7 +449,14 @@ export function Routines({ state, update, edit, notify }: ViewProps) {
                 <Clock3 size={14} />
                 {r.untimed
                   ? "Any time"
-                  : displayTime(r.start) + " · " + durationLabel(r.duration)}
+                  : displayTime(routineStart(r, dayKey())) +
+                    (r.timeSchedules?.some((schedule) =>
+                      schedule.weekdays.some(Boolean),
+                    )
+                      ? " · varies by day"
+                      : "") +
+                    " · " +
+                    durationLabel(r.duration)}
               </p>
               <div className="routine-days">
                 {[1, 2, 3, 4, 5, 6, 0].map((d) => (
@@ -489,7 +478,32 @@ export function Routines({ state, update, edit, notify }: ViewProps) {
                   className="text-button"
                   onClick={() => {
                     update((s) => {
-                      s.routines.find((x) => x.id === r.id)!.paused = !r.paused;
+                      const routine = s.routines.find((x) => x.id === r.id)!;
+                      const today = dayKey();
+                      const periods =
+                        routine.pausePeriods ??
+                        (routine.paused
+                          ? [
+                              {
+                                start:
+                                  s.audit
+                                    .filter(
+                                      (a) =>
+                                        a.recordId === r.id &&
+                                        a.action === "Routine paused",
+                                    )
+                                    .at(-1)
+                                    ?.at.slice(0, 10) || today,
+                                end: null,
+                              },
+                            ]
+                          : []);
+                      if (routine.paused) {
+                        const open = periods.findLast((period) => !period.end);
+                        if (open) open.end = today;
+                      } else periods.push({ start: today, end: null });
+                      routine.pausePeriods = periods;
+                      routine.paused = !r.paused;
                       audit(
                         s,
                         r.paused ? "Routine resumed" : "Routine paused",
@@ -506,26 +520,66 @@ export function Routines({ state, update, edit, notify }: ViewProps) {
                   {r.paused ? <Play size={13} /> : <Pause size={13} />}{" "}
                   {r.paused ? "Resume" : "Pause"}
                 </button>
-                <button
-                  className="text-button danger"
-                  onClick={() => {
-                    if (!confirm(`Delete “${r.title}”? This cannot be undone.`))
-                      return;
-                    update((s) => {
-                      s.routines = s.routines.filter((x) => x.id !== r.id);
-                      s.routineRecords = s.routineRecords.filter(
-                        (x) => x.routineId !== r.id,
-                      );
-                      s.exceptions = s.exceptions.filter(
-                        (x) => x.routineId !== r.id,
-                      );
-                      audit(s, "Removed routine", r.id);
-                    });
-                    notify("Routine removed. Sync to update Google Calendar.");
-                  }}
-                >
-                  <Trash2 size={13} /> Delete
-                </button>
+                {deleting === r.id ? (
+                  <div role="group" aria-label={`Delete ${r.title}`}>
+                    <p>
+                      Keep past occurrences, or remove every occurrence
+                      including history?
+                    </p>
+                    <button
+                      className="text-button danger"
+                      onClick={() => {
+                        update((s) => {
+                          const routine = s.routines.find(
+                            (x) => x.id === r.id,
+                          )!;
+                          routine.deletedAt = dayKey();
+                          audit(s, "Removed routine, kept history", r.id);
+                        });
+                        setDeleting(null);
+                        notify(
+                          "Routine removed; past occurrences kept. Sync to update Google Calendar.",
+                        );
+                      }}
+                    >
+                      Keep past
+                    </button>{" "}
+                    <button
+                      className="text-button danger"
+                      onClick={() => {
+                        update((s) => {
+                          s.routines = s.routines.filter((x) => x.id !== r.id);
+                          s.routineRecords = s.routineRecords.filter(
+                            (x) => x.routineId !== r.id,
+                          );
+                          s.exceptions = s.exceptions.filter(
+                            (x) => x.routineId !== r.id,
+                          );
+                          audit(s, "Removed routine and history", r.id);
+                        });
+                        setDeleting(null);
+                        notify(
+                          "Routine and all occurrences removed. Sync to update Google Calendar.",
+                        );
+                      }}
+                    >
+                      Delete all
+                    </button>{" "}
+                    <button
+                      className="text-button"
+                      onClick={() => setDeleting(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="text-button danger"
+                    onClick={() => setDeleting(r.id)}
+                  >
+                    <Trash2 size={13} /> Delete
+                  </button>
+                )}
               </div>
             </article>
           ))}
@@ -567,7 +621,9 @@ export function Projects({
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [archived, setArchived] = useState(false);
-  const visibleProjects = state.projects.filter((p) => (p.status === "completed") === archived);
+  const visibleProjects = state.projects.filter(
+    (p) => (p.status === "completed") === archived,
+  );
   const [taskMilestone, setTaskMilestone] = useState("");
   const project = state.projects.find((p) => p.id === selected);
   const latestMilestoneProposal = state.aiRuns.findLast(
@@ -584,45 +640,41 @@ export function Projects({
   const currentWorkGroups = project
     ? [
         ...[...project.milestones]
-          .sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title))
+          .sort(
+            (a, b) =>
+              a.date.localeCompare(b.date) || a.title.localeCompare(b.title),
+          )
           .map((milestone) => ({
             id: milestone.id,
             title: milestone.title,
-            tasks: currentTasks.filter((task) => task.milestoneId === milestone.id),
+            tasks: currentTasks.filter(
+              (task) => task.milestoneId === milestone.id,
+            ),
           })),
         {
           id: "unassigned",
           title: "No milestone",
           tasks: currentTasks.filter(
-            (task) => !project.milestones.some((milestone) => milestone.id === task.milestoneId),
+            (task) =>
+              !project.milestones.some(
+                (milestone) => milestone.id === task.milestoneId,
+              ),
           ),
         },
       ].filter((group) => group.tasks.length > 0)
     : [];
   return (
     <>
-      <PageHeading
-        eyebrow="BIG IDEAS, MANAGEABLE STEPS"
-        title={project ? project.title : "Keep the bigger picture close."}
-        subtitle={
-          project
-            ? project.outcome
-            : "Turn meaningful outcomes into milestones you can actually see."
-        }
-        action={() =>
-          edit(
-            project ? { kind: "project", id: project.id } : { kind: "project" },
-          )
-        }
-        label={project ? "Edit project" : "New project"}
-      />
       <div className="tab-row" aria-label="Project lists">
         {([false, true] as const).map((value) => (
           <button
             key={String(value)}
             className={value === archived ? "active" : ""}
             aria-pressed={value === archived}
-            onClick={() => { setArchived(value); setSelected(null); }}
+            onClick={() => {
+              setArchived(value);
+              setSelected(null);
+            }}
           >
             {value ? "Archived projects" : "Active projects"}
           </button>
@@ -828,9 +880,8 @@ export function Projects({
                   Ask AI for a small set of milestone proposals based on your
                   outcome, estimates, and calendar capacity.
                 </p>
-                {typeof latestMilestoneProposal?.output.summary === "string" && (
-                  <p>{latestMilestoneProposal.output.summary}</p>
-                )}
+                {typeof latestMilestoneProposal?.output.summary ===
+                  "string" && <p>{latestMilestoneProposal.output.summary}</p>}
                 <button
                   className="button secondary"
                   disabled={busy || !aiReady}
@@ -841,22 +892,28 @@ export function Projects({
                     : "Propose milestones with AI"}
                 </button>
                 <Field label="Milestone for task suggestions">
-                  <select value={selectedTaskMilestone?.id ?? ""} onChange={(event) => setTaskMilestone(event.target.value)}>
+                  <select
+                    value={selectedTaskMilestone?.id ?? ""}
+                    onChange={(event) => setTaskMilestone(event.target.value)}
+                  >
                     <option value="">Select a milestone</option>
-                    {project.milestones.filter((m) => m.approved && !m.completed).map((m) => (
-                      <option key={m.id} value={m.id}>{m.title}</option>
-                    ))}
+                    {project.milestones
+                      .filter((m) => m.approved && !m.completed)
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.title}
+                        </option>
+                      ))}
                   </select>
                 </Field>
                 <button
                   className="button secondary"
                   style={{ marginTop: 10 }}
-                  disabled={
-                    busy ||
-                    !aiReady ||
-                    !selectedTaskMilestone
+                  disabled={busy || !aiReady || !selectedTaskMilestone}
+                  onClick={() =>
+                    selectedTaskMilestone &&
+                    proposeTasks(project.id, selectedTaskMilestone.id)
                   }
-                  onClick={() => selectedTaskMilestone && proposeTasks(project.id, selectedTaskMilestone.id)}
                 >
                   Suggest next tasks with AI
                 </button>
@@ -911,7 +968,11 @@ export function Projects({
                   });
                   setArchived(project.status === "active");
                   setSelected(null);
-                  notify(project.status === "active" ? "Project archived." : "Project reopened.");
+                  notify(
+                    project.status === "active"
+                      ? "Project archived."
+                      : "Project reopened.",
+                  );
                 }}
               >
                 {project.status === "active"
