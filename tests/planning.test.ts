@@ -9,6 +9,7 @@ import {
   priorityResultSchema,
 } from "../lib/ai-freshness";
 import { planningContext } from "../lib/planning-context";
+import { manualTaskAliases } from "../lib/todo-identity";
 
 function fixture() {
   const state = emptyState();
@@ -172,6 +173,20 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
       /effort estimates, measured pace/,
     );
     saveMain(state, main.body);
+    output = {
+      taskIds: ["pcb-1"],
+      summary: "Keep the manual task once.",
+      recordedWork: [
+        { sourceTaskId: "pcb-1", title: "Design PCB #1", evidenceQuote: "Repeated selected work." },
+        { sourceTaskId: "pcb-1", title: "PCB #2", evidenceQuote: "PCB #2 remains unstarted." },
+        { sourceTaskId: "pcb-1", title: "PCB #2", evidenceQuote: "Repeated second aspect." },
+      ],
+    };
+    const repeated = await request(state);
+    assert.equal(repeated.body.aiError, undefined);
+    assert.equal(repeated.body.recommendations.filter((entry: any) => entry.taskId === "pcb-1").length, 1);
+    assert.deepEqual(repeated.body.generatedTasks.map((task: Task) => task.title), ["PCB #2"]);
+    assert.equal(state.tasks[0].estimate, 120);
     const before = JSON.stringify(state);
     output = {
       taskIds: [],
@@ -217,7 +232,7 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
     };
     assert((await request(state, "extras")).body.aiError);
     output = { taskIds: [], summary: "Invalid omission of the user's choice" };
-    assert((await request(state)).body.aiError);
+    assert.match((await request(state)).body.aiError, /user-selected task was omitted/);
     const callsBefore = calls;
     state.tasks[0].notes = "The plan changed.";
     assert.equal((await request(state, "extras")).status, 409);
@@ -253,4 +268,14 @@ test("freshness tracks edits to existing progress reports and named calendar con
   const eventKey = evidenceKey(state, workspaceDay(state));
   state.events[0].title = "Exam";
   assert.notEqual(evidenceKey(state, workspaceDay(state)), eventKey);
+});
+
+test("saved AI duplicates reuse manual task cards while separate work and booked history stay distinct", () => {
+  const state = fixture();
+  const manual = state.tasks[0];
+  const copy = { ...manual, id: "copy", aiTodoDate: workspaceDay(state), estimate: null, remaining: null };
+  state.tasks.push(copy, { ...copy, id: "other", title: "PCB #2" });
+  assert.equal(manualTaskAliases(state.tasks, new Set()).get("copy"), manual.id);
+  assert.equal(manualTaskAliases(state.tasks, new Set()).has("other"), false);
+  assert.equal(manualTaskAliases(state.tasks, new Set(["copy"])).has("copy"), false);
 });

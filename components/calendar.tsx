@@ -1,4 +1,5 @@
 "use client";
+import { manualTaskAliases } from "@/lib/todo-identity";
 import { useState, useRef, useEffect, useMemo } from "react";
 import {
   ChevronLeft,
@@ -272,7 +273,8 @@ export function Planner({
   const today = zonedNow.day;
   const scheduled = scheduledTaskIds(state);
   const overridden = googleOverrides(state);
-  const recommended = recommendations(state, date);
+  const aliases = manualTaskAliases(state.tasks, scheduled);
+  const recommended = recommendations(state, date).filter(({ task }) => !aliases.has(task.id));
   const unscheduled = recommended.filter(({ task }) => !scheduled.has(task.id));
   const allScheduled = recommended.length > 0 && unscheduled.length === 0;
   const returnedIds = new Set(
@@ -299,7 +301,7 @@ export function Planner({
       ? aiPriorities
         ? aiPriorities.recommendations.flatMap((r) => {
             const task = unscheduled.find(
-              ({ task }) => task.id === r.taskId,
+              ({ task }) => task.id === (aliases.get(r.taskId) ?? r.taskId),
             )?.task;
             return task
               ? [{ task, reason: r.reason, due: null, score: 0 }]
@@ -309,7 +311,7 @@ export function Planner({
       : bank === "active"
         ? recommended
         : unscheduled;
-  const tasks =
+  const bankTasks =
     bank === "recommended"
       ? [
           ...suggested,
@@ -318,6 +320,9 @@ export function Planner({
           ),
         ]
       : suggested;
+  const tasks = bankTasks.filter((item, index) =>
+    bankTasks.findIndex((other) => other.task.id === item.task.id) === index,
+  );
   const mainTaskIds = new Set(
     aiPriorities?.recommendations.map((item) => item.taskId),
   );

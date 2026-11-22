@@ -135,11 +135,15 @@ export async function checkAI() {
 
 export function validateAIResult<T>(schema: ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
-  if (!parsed.success)
+  if (!parsed.success) {
+    const fields = parsed.error.issues.slice(0, 3).map((issue) =>
+      issue.path.join(".") + " (" + (issue.code === "custom" ? issue.message : issue.code) + ")",
+    ).join("; ");
     throw new HttpError(
-      "Gemini returned an unexpected result format. No AI result was saved.",
+      "Gemini returned an unexpected result format. No AI result was saved. Check: " + fields,
       502,
     );
+  }
   return parsed.data;
 }
 

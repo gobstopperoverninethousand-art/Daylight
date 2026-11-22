@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sameTodoWork } from "@/lib/todo-identity";
 import { z } from "zod";
 import {
   addDays,
@@ -420,12 +421,9 @@ export async function POST(req: NextRequest) {
             summary: z.string().trim().min(1),
             taskIds: z
               .array(z.string())
-              .refine(
-                (ids) =>
-                  new Set(ids).size === ids.length &&
-                  ids.every((id) => eligibleIds.has(id)) &&
-                  (mode === "extras" || included.every((id) => ids.includes(id))),
-              ),
+              .refine((ids) => new Set(ids).size === ids.length, "Repeated task IDs.")
+              .refine((ids) => ids.every((id) => eligibleIds.has(id)), "Unknown or ineligible task IDs.")
+              .refine((ids) => mode === "extras" || included.every((id) => ids.includes(id)), "A user-selected task was omitted."),
           }),
           await callAI(
             mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
@@ -466,6 +464,14 @@ export async function POST(req: NextRequest) {
             completedAt: null,
             aiTodoDate: today,
           };
+          const existing = [...candidates, ...generated.values()].find(
+            (candidate) => candidate.status === "active" && !candidate.deletedProject &&
+              sameTodoWork(candidate, task),
+          );
+          if (existing) {
+            if (eligibleIds.has(existing.id)) taskIds.push(existing.id);
+            continue;
+          }
           generated.set(task.id, task);
           taskIds.push(task.id);
         }
@@ -474,6 +480,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ aiError: error.message });
       }
     }
+    taskIds = [...new Set(taskIds)];
     const recommendations = taskIds.map((taskId) => ({
       taskId,
       reason: "",
