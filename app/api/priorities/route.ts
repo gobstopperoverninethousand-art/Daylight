@@ -1,4 +1,3 @@
-import { sameTodoWork, todoAliases } from "@/lib/todo-identity";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -150,10 +149,7 @@ export async function POST(req: NextRequest) {
         : [],
     );
 
-    const unexpired = expireGeneratedTodos(state, today, minute);
-    const aliases = todoAliases(unexpired, new Set(state.sessions.map(session => session.taskId)));
-    const tasks = unexpired.filter(task => !aliases.has(task.id));
-    for (const id of [...mainIds]) { const canonical = aliases.get(id); if (canonical) mainIds.add(canonical); }
+    const tasks = expireGeneratedTodos(state, today, minute);
     const scheduled = scheduledTaskIds(state);
     const generated = new Map<string, Task>();
     const additionalWorkCandidates = new Set<string>();
@@ -470,12 +466,6 @@ export async function POST(req: NextRequest) {
             completedAt: null,
             aiTodoDate: today,
           };
-          // recordedWork is for new aspects, never a second serialization of taskIds.
-          const existing = [...candidates, ...generated.values()].find(candidate => candidate.status === "active" && sameTodoWork(candidate, task));
-          if (existing) {
-            if (eligibleIds.has(existing.id) || taskIds.includes(existing.id)) taskIds.push(existing.id);
-            continue;
-          }
           generated.set(task.id, task);
           taskIds.push(task.id);
         }
@@ -484,7 +474,6 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ aiError: error.message });
       }
     }
-    taskIds = [...new Set(taskIds)];
     const recommendations = taskIds.map((taskId) => ({
       taskId,
       reason: "",
