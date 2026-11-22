@@ -1,5 +1,5 @@
 // Full planning rules and templates sent to the connected AI.
-export const PLANNING_PROMPT_VERSION = "planning-v8";
+export const PLANNING_PROMPT_VERSION = "planning-v9";
 
 const shared = `
 EVIDENCE AND CONTEXT
@@ -23,7 +23,7 @@ Return only valid JSON, no markdown fences:
   "summary": "Plain text explanation with section labels and blank lines as described below.",
   "decisionMemory": [{"commitment":"deadline:ID or milestone:ID or project:ID", "rationale":"Why work was included/excluded or brought forward, naming relevant future constraints; this is advice, not accomplished work."}]
 }
-Use every selected ID once, only from eligible_tasks. recordedWork adds a distinct aspect established in the reports/notes when no existing task covers it. Describe its supporting evidence; paraphrasing is allowed and exact title/quote matches are not required. Use existing task IDs when they cover the work. Judge duplication by actual coverage, not titles alone. A common commitment does not imply duplication. Multiple distinct aspects may share a commitment. A source may already be on the main list. Do not invent components or generic duplicates. Never prepend "Work on". Create no effort estimate. decisionMemory preserves why work was brought forward/included/excluded, using exact open_commitments keys. This memory is advice, not evidence of accomplishment. Return [] when nothing qualifies.
+Use every selected ID once, only from eligible_tasks. taskIds and recordedWork are mutually exclusive representations of the same work: NEVER repeat a selected task in recordedWork. Existing tasks must use taskIds and retain their estimates. recordedWork is only for distinct work that has no existing task; it is not a list of explanations for selected tasks. recordedWork adds a distinct aspect established in the reports/notes when no existing task covers it. Describe its supporting evidence; paraphrasing is allowed and exact title/quote matches are not required. Use existing task IDs when they cover the work. Judge duplication by actual coverage, not titles alone. A common commitment does not imply duplication. Multiple distinct aspects may share a commitment. A source may already be on the main list. Do not invent components or generic duplicates. Never prepend "Work on". Create no effort estimate. decisionMemory preserves why work was brought forward/included/excluded, using exact open_commitments keys. This memory is advice, not evidence of accomplishment. Return [] when nothing qualifies.
 `;
 
 export const MAIN_TODO_PROMPT =

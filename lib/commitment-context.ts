@@ -1,5 +1,5 @@
 import { deadlineEntries } from "./deadlines";
-import { addDays, type State } from "./model";
+import type { State } from "./model";
 
 export function commitmentHistory(state: State) {
   const entries = deadlineEntries(state).filter((entry) => !entry.resolved);
@@ -117,19 +117,4 @@ export function commitmentHistory(state: State) {
         })),
     };
   });
-}
-
-export function expireGeneratedTodos(
-  state: State,
-  day: string,
-  minute: number,
-) {
-  const booked = new Set(state.sessions.map((session) => session.taskId));
-  const expired = state.tasks.filter(({ id, aiTodoDate, status }) => {
-    if (!aiTodoDate || booked.has(id) || status !== "active") return false;
-    const expirationDay = addDays(aiTodoDate, 1);
-    return day > expirationDay || (day === expirationDay && minute >= 540);
-  });
-  const ids = new Set(expired.map((task) => task.id));
-  return state.tasks.filter((task) => !ids.has(task.id));
 }

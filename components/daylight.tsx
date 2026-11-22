@@ -25,7 +25,6 @@ import {
   AlertCircle,
   Loader2,
 } from "lucide-react";
-import { expireGeneratedTodos } from "@/lib/commitment-context";
 import { useWorkspace } from "@/lib/use-workspace";
 import {
   State,
@@ -769,7 +768,7 @@ export default function Daylight() {
       }
       const generated = taskSchema.array().parse(result.generatedTasks ?? []);
       update((s) => {
-        const { day, minute } = zonedParts(
+        const { day } = zonedParts(
           new Date().toISOString(),
           s.settings.timezone,
         );
@@ -780,7 +779,6 @@ export default function Daylight() {
           throw new Error(
             "Your plan changed while refreshing. Refresh to update the to-do bank.",
           );
-        s.tasks = expireGeneratedTodos(s, day, minute);
         const scheduledTaskIds = new Set(
           s.sessions.map((session) => session.taskId),
         );

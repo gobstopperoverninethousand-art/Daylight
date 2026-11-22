@@ -32,7 +32,6 @@ import {
   localInstant,
 } from "../lib/google-plan";
 import {
-  expireGeneratedTodos,
   commitmentHistory,
 } from "../lib/commitment-context";
 const day = "2026-11-09",
@@ -707,31 +706,6 @@ test("sessions cannot spill into the next day without a separate booking", () =>
   s.tasks.push(task());
   s.sessions.push(session("a", { start: "23:30", duration: 60 }));
   assert.equal(stateSchema.safeParse(s).success, false);
-});
-
-test("generated to-dos expire at 9 a.m. the next day while booked and manual tasks persist", () => {
-  const s = state();
-  s.tasks.push(
-    task("temporary", { aiTodoDate: day }),
-    task("booked", { aiTodoDate: day }),
-    task("manual"),
-  );
-  s.sessions.push({
-    id: "booking",
-    taskId: "booked",
-    date: addDays(day, 2),
-    start: "10:00",
-    duration: 30,
-    outcome: "pending",
-    actualMinutes: null,
-    note: "",
-    needsReview: false,
-  });
-  assert.equal(expireGeneratedTodos(s, addDays(day, 1), 539).length, 3);
-  assert.deepEqual(
-    expireGeneratedTodos(s, addDays(day, 1), 540).map((t) => t.id),
-    ["booked", "manual"],
-  );
 });
 
 test("commitment evidence follows linked sessions and excludes unrelated work", () => {

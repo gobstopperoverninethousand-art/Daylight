@@ -1,3 +1,4 @@
+import { sameTodoWork, todoAliases } from "@/lib/todo-identity";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -32,7 +33,6 @@ import {
   PLANNING_PROMPT_VERSION,
 } from "@/lib/server/planning-prompts";
 import { deadlineEntries } from "@/lib/deadlines";
-import { expireGeneratedTodos } from "@/lib/commitment-context";
 
 function todoTitle(title: string) {
   return title
@@ -149,7 +149,9 @@ export async function POST(req: NextRequest) {
         : [],
     );
 
-    const tasks = expireGeneratedTodos(state, today, minute);
+    const aliases = todoAliases(state.tasks, new Set(state.sessions.map(session => session.taskId)));
+    const tasks = state.tasks.filter(task => !aliases.has(task.id));
+    for (const id of [...mainIds]) { const canonical = aliases.get(id); if (canonical) mainIds.add(canonical); }
     const scheduled = scheduledTaskIds(state);
     const generated = new Map<string, Task>();
     const additionalWorkCandidates = new Set<string>();
@@ -466,6 +468,12 @@ export async function POST(req: NextRequest) {
             completedAt: null,
             aiTodoDate: today,
           };
+          // recordedWork is for new aspects, never a second serialization of taskIds.
+          const existing = [...candidates, ...generated.values()].find(candidate => candidate.status === "active" && sameTodoWork(candidate, task));
+          if (existing) {
+            if (eligibleIds.has(existing.id) || taskIds.includes(existing.id)) taskIds.push(existing.id);
+            continue;
+          }
           generated.set(task.id, task);
           taskIds.push(task.id);
         }
@@ -473,6 +481,18 @@ export async function POST(req: NextRequest) {
         if (!(error instanceof HttpError)) throw error;
         return NextResponse.json({ aiError: error.message });
       }
+    }
+    const dueToday = taskFacts.filter((task) => task.due === today);
+    taskIds = [...new Set(mode === "main"
+      ? [...taskIds, ...dueToday.map((task) => task.id)]
+      : taskIds)];
+    if (mode === "main") {
+      const selected = taskIds.map((id) => (generated.get(id) ?? candidatesById.get(id))!.title);
+      summary = selected.length
+        ? `${useLocalFallback ? "Local ranking" : "AI priorities"} selected ${selected.join(", ")}.`
+        : "No unscheduled tasks were selected.";
+      if (dueToday.length)
+        summary += " Due today: " + dueToday.map((task) => task.title).join(", ") + ".";
     }
     const recommendations = taskIds.map((taskId) => ({
       taskId,

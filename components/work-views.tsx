@@ -688,6 +688,12 @@ export function Projects({
           >
             ← All projects
           </button>
+          <button
+            className="button secondary small"
+            onClick={() => edit({ kind: "project", id: project.id })}
+          >
+            Edit project
+          </button>
           <div className="project-detail-grid">
             <div>
               <div className="project-summary panel">

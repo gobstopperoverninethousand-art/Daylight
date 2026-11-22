@@ -1,4 +1,5 @@
 "use client";
+import { todoAliases } from "@/lib/todo-identity";
 import { useState, useRef, useEffect, useMemo } from "react";
 import {
   ChevronLeft,
@@ -272,7 +273,8 @@ export function Planner({
   const today = zonedNow.day;
   const scheduled = scheduledTaskIds(state);
   const overridden = googleOverrides(state);
-  const recommended = recommendations(state, date);
+  const aliases = todoAliases(state.tasks, new Set(state.sessions.map(session => session.taskId)));
+  const recommended = recommendations(state, date).filter(({task}) => !aliases.has(task.id));
   const unscheduled = recommended.filter(({ task }) => !scheduled.has(task.id));
   const allScheduled = recommended.length > 0 && unscheduled.length === 0;
   const returnedIds = new Set(
@@ -299,7 +301,7 @@ export function Planner({
       ? aiPriorities
         ? aiPriorities.recommendations.flatMap((r) => {
             const task = unscheduled.find(
-              ({ task }) => task.id === r.taskId,
+              ({ task }) => task.id === (aliases.get(r.taskId) ?? r.taskId),
             )?.task;
             return task
               ? [{ task, reason: r.reason, due: null, score: 0 }]
@@ -318,6 +320,7 @@ export function Planner({
           ),
         ]
       : suggested;
+  const distinctTasks = tasks.filter((item, index) => tasks.findIndex(other => other.task.id === item.task.id) === index);
   const mainTaskIds = new Set(
     aiPriorities?.recommendations.map((item) => item.taskId),
   );
@@ -709,6 +712,11 @@ export function Planner({
                 Plan changed · Needs refresh
               </span>
             )}
+            {aiPriorities && (
+              <p className="form-hint">
+                Last refreshed {new Date(aiPriorities.createdAt).toLocaleString()}
+              </p>
+            )}
           </div>
           <button
             className="button secondary small"
@@ -792,9 +800,9 @@ export function Planner({
                 All active
               </button>
             </div>
-            {tasks.length ? (
+            {distinctTasks.length ? (
               <div className="todo-list">
-                {tasks.map(({ task, reason }) => (
+                {distinctTasks.map(({ task, reason }) => (
                   <TaskCard
                     key={task.id}
                     task={task}

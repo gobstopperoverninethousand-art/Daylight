@@ -171,6 +171,20 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
       sent.systemInstruction.parts[0].text,
       /effort estimates, measured pace/,
     );
+    output = {
+      taskIds: ["pcb-1"], summary: "Keep the manual task once.",
+      recordedWork: [
+        { sourceTaskId: "pcb-1", title: "Design PCB #1", evidenceQuote: "Repeated selected work." },
+        { sourceTaskId: "pcb-1", title: "PCB #2", evidenceQuote: "PCB #2 is unstarted." },
+        { sourceTaskId: "pcb-1", title: "PCB #2", evidenceQuote: "Repeated new aspect." },
+      ],
+    };
+    const repeated = await request(state);
+    assert.equal(repeated.body.aiError, undefined);
+    assert.equal(repeated.body.recommendations.filter((item: any) => item.taskId === "pcb-1").length, 1);
+    assert.equal(repeated.body.generatedTasks.length, 1);
+    assert.equal(repeated.body.generatedTasks[0].title, "PCB #2");
+    assert.equal(state.tasks[0].estimate, 120);
     saveMain(state, main.body);
     const before = JSON.stringify(state);
     output = {
@@ -222,6 +236,16 @@ test("planning requests preserve older evidence, validate recorded aspects, and 
     state.tasks[0].notes = "The plan changed.";
     assert.equal((await request(state, "extras")).status, 409);
     assert.equal(calls, callsBefore);
+    const today = workspaceDay(state);
+    state.deadlines.push({ ...state.deadlines[0], id: "practice-log", title: "Practice Log", date: today });
+    state.tasks.push({ ...state.tasks[0], id: "carried", title: "Carry over work", includeDate: null, aiTodoDate: addDays(today, -3) });
+    output = { taskIds: ["pcb-1", "carried"], summary: "I selected an invented task." };
+    const refreshed = (await request(state)).body;
+    assert.equal(refreshed.aiError, undefined);
+    assert.ok(refreshed.recommendations.some((entry: { taskId: string }) => entry.taskId === "carried"));
+    assert.equal(refreshed.generatedTasks[0].title, "Practice Log");
+    assert.match(refreshed.summary, /Due today: Practice Log/);
+    assert.doesNotMatch(refreshed.summary, /invented task/);
   } finally {
     globalThis.fetch = fetch;
     keys.forEach((key, index) => {
