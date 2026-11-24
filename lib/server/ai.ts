@@ -250,10 +250,8 @@ export async function callAI(
       responseJsonSchema,
       // Caps a runaway answer. Normal results are far shorter.
       maxOutputTokens,
-      // Gemini 3 models reason at "medium" by default, which is slow for these
-      // small structured tasks.
       ...(/^gemini-3/.test(model)
-        ? { thinkingConfig: { thinkingLevel: "low" } }
+        ? { thinkingConfig: { thinkingLevel: "medium" } }
         : {}),
     },
   });

@@ -23,7 +23,7 @@ test("Gemini keeps credentials server-side and rejects incomplete or invalid ass
     );
     const body = JSON.parse(String(init?.body));
     assert.equal(body.generationConfig.responseMimeType, "application/json");
-    assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "low");
+    assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "medium");
     assert.ok(!("temperature" in body.generationConfig));
     assert.equal(body.contents[0].parts[0].text, 'INPUT\n{"task":"a record"}');
     if (transportCode)
