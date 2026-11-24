@@ -2,14 +2,30 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { NextRequest } from "next/server";
 import { POST } from "../app/api/priorities/route";
-import { emptyState, addDays, type State, type Task } from "../lib/model";
+import { emptyState, addDays, removeTask, type State, type Task } from "../lib/model";
 import {
   evidenceKey,
   workspaceDay,
   priorityResultSchema,
 } from "../lib/ai-freshness";
-import { planningContext } from "../lib/planning-context";
+import { planningContext, deletedPlanningTasks } from "../lib/planning-context";
 import { manualTaskAliases } from "../lib/todo-identity";
+
+test("planner preserves deletion context and recovers older deletions from saved inputs", () => {
+  const state = fixture();
+  const original = structuredClone(state.tasks[0]);
+  saveMain(state, {
+    summary: "Prior list", recommendations: [], generatedTasks: [],
+    snapshot: { task_history: [original] },
+  });
+  removeTask(state, original.id);
+  assert.deepEqual(deletedPlanningTasks(state), [original]);
+  assert.deepEqual(planningContext(state, state.tasks).deleted_tasks, [original]);
+  delete state.audit[state.audit.length - 1].deletedTask;
+  assert.deepEqual(deletedPlanningTasks(state), [original]);
+  state.tasks.push(original);
+  assert.deepEqual(deletedPlanningTasks(state), []);
+});
 
 function fixture() {
   const state = emptyState();

@@ -26,7 +26,7 @@ import {
 } from "@/lib/server/auth";
 import { callAI, AI_PROMPT_VERSION, validateAIResult } from "@/lib/server/ai";
 import { evidenceKey, priorityResultSchema } from "@/lib/ai-freshness";
-import { planningContext, taskCommitment } from "@/lib/planning-context";
+import { planningContext, taskCommitment, deletedPlanningTasks } from "@/lib/planning-context";
 import {
   MAIN_TODO_PROMPT,
   EXTRA_RECOMMENDATIONS_PROMPT,
@@ -153,6 +153,13 @@ export async function POST(req: NextRequest) {
     const tasks = expireGeneratedTodos(state, today, minute);
     const scheduled = scheduledTaskIds(state);
     const generated = new Map<string, Task>();
+    const deletedTasks = deletedPlanningTasks(state);
+    const wasDeleted = (task: Task) => deletedTasks.some((deleted) =>
+      sameTodoWork(
+        { ...deleted, deadlineId: null, milestoneId: null, projectId: null },
+        { ...task, deadlineId: null, milestoneId: null, projectId: null },
+      ) && (!deleted.projectId || !task.projectId || deleted.projectId === task.projectId),
+    );
     const additionalWorkCandidates = new Set<string>();
     const entries = deadlineEntries(state).filter((entry) => !entry.resolved);
     for (const entry of entries) {
@@ -222,6 +229,7 @@ export async function POST(req: NextRequest) {
         completedAt: null,
         aiTodoDate: today,
       };
+      if (wasDeleted(task)) continue;
       generated.set(task.id, task);
       if (manualWorkToday) additionalWorkCandidates.add(task.id);
     }
@@ -428,7 +436,8 @@ export async function POST(req: NextRequest) {
               .refine((ids) => ids.every((id) => eligibleIds.has(id)), "Unknown or ineligible task IDs."),
           }),
           await callAI(
-            mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT,
+            (mode === "extras" ? EXTRA_RECOMMENDATIONS_PROMPT : MAIN_TODO_PROMPT) +
+              "\nINPUT.deleted_tasks records explicit user deletions. Do not recreate that work through taskIds or recordedWork, including renamed or unlinked copies. Older reports and prior AI advice do not override a deletion. Existing tasks the user has created again remain eligible. Make the explanation agree with these choices.",
             input,
             {
               type: "object",
@@ -500,6 +509,7 @@ export async function POST(req: NextRequest) {
             (candidate) => candidate.status === "active" && !candidate.deletedProject &&
               sameTodoWork(candidate, task),
           );
+          if (!existing && wasDeleted(task)) continue;
           if (existing) {
             if (eligibleIds.has(existing.id)) taskIds.push(existing.id);
             continue;

@@ -1,4 +1,4 @@
-import type { State, Task } from "./model";
+import { taskSchema, type State, type Task } from "./model";
 import { commitmentHistory } from "./commitment-context";
 
 export function taskCommitment(task: Task) {
@@ -43,6 +43,7 @@ export function planningContext(state: State, candidates: Task[]) {
   });
   const activeKeys = new Set(history.map((item) => item.key));
   return {
+    deleted_tasks: deletedPlanningTasks(state),
     commitment_history: history,
     confirmed_daily_reports: state.reviews.map((review) => ({
       date: review.date,
@@ -114,4 +115,23 @@ export function planningContext(state: State, candidates: Task[]) {
         }));
     }),
   };
+}
+
+export function deletedPlanningTasks(state: State): Task[] {
+  return state.audit
+    .filter((entry) => entry.action === "Task deleted with scheduled sessions")
+    .flatMap((entry) => {
+      if (state.tasks.some((task) => task.id === entry.recordId)) return [];
+      if (entry.deletedTask) return [entry.deletedTask];
+      // Older deletion records have only an ID. Recover their identity from
+      // the snapshots already saved with previous planner runs.
+      for (const run of [...state.aiRuns].reverse()) {
+        const history = run.snapshot.task_history;
+        if (!Array.isArray(history)) continue;
+        const task = history.find((item) => item?.id === entry.recordId);
+        const parsed = taskSchema.safeParse(task);
+        if (parsed.success) return [parsed.data];
+      }
+      return [];
+    });
 }
