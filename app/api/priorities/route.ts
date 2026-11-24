@@ -399,6 +399,9 @@ export async function POST(req: NextRequest) {
         : "Daylight’s local rules found no unscheduled tasks to recommend today.";
     } else {
       try {
+        const commitmentKeys = new Set(
+          entries.map((entry) => `${entry.kind}:${entry.id}`),
+        );
         const result = validateAIResult(
           z.object({
             recordedWork: z
@@ -455,7 +458,10 @@ export async function POST(req: NextRequest) {
                   items: {
                     type: "object",
                     properties: {
-                      commitment: { type: "string" },
+                      commitment: {
+                        type: "string",
+                        ...(commitmentKeys.size ? { enum: [...commitmentKeys] } : {}),
+                      },
                       rationale: { type: "string" },
                     },
                     required: ["commitment", "rationale"],
@@ -468,19 +474,9 @@ export async function POST(req: NextRequest) {
         );
         summary = result.summary;
         taskIds = mode === "main" ? [...result.taskIds, ...included] : [...result.taskIds];
-        const commitmentKeys = new Set(
-          entries.map((entry) => `${entry.kind}:${entry.id}`),
+        decisionMemory = result.decisionMemory.filter((item) =>
+          commitmentKeys.has(item.commitment),
         );
-        if (
-          result.decisionMemory.some(
-            (item) => !commitmentKeys.has(item.commitment),
-          )
-        )
-          throw new HttpError(
-            "AI returned an unknown commitment in its explanation memory.",
-            502,
-          );
-        decisionMemory = result.decisionMemory;
         for (const item of result.recordedWork) {
           const source = candidatesById.get(item.sourceTaskId);
           if (!source || source.status !== "active")
