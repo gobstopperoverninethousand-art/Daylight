@@ -1,4 +1,5 @@
-import { taskSchema, type State, type Task } from "./model";
+import { addDays, type State, type Task } from "./model";
+import { workspaceDay } from "./ai-freshness";
 import { commitmentHistory } from "./commitment-context";
 
 export function taskCommitment(task: Task) {
@@ -11,9 +12,15 @@ export function taskCommitment(task: Task) {
         : null;
 }
 
-export function planningContext(state: State, candidates: Task[]) {
+export function planningContext(state: State, candidates: Task[], today = workspaceDay(state)) {
+  const weekStart = addDays(today, -6);
   const history = commitmentHistory(state);
-  const sourceRecords = candidates.map((task) => {
+  const activeKeys = new Set(history.map((item) => item.key));
+  const relevantTasks = candidates.filter((task) =>
+    task.status === "active" || activeKeys.has(taskCommitment(task) ?? "")
+  );
+  const relevantIds = new Set(relevantTasks.map((task) => task.id));
+  const sourceRecords = relevantTasks.map((task) => {
     const commitment = taskCommitment(task);
     const scoped = history.find((item) => item.key === commitment);
     const deadline = state.deadlines.find(
@@ -41,17 +48,25 @@ export function planningContext(state: State, candidates: Task[]) {
       ].filter((text): text is string => !!text),
     };
   });
-  const activeKeys = new Set(history.map((item) => item.key));
   return {
-    deleted_tasks: deletedPlanningTasks(state),
-    commitment_history: history,
-    confirmed_daily_reports: state.reviews.map((review) => ({
+    commitment_history: history.map((entry) => ({
+      ...entry,
+      updates: entry.updates.map((update) => ({
+        date: update.date,
+        commitment: update.commitment,
+        note: update.note,
+        earlier_report_changed: update.earlier_report_changed,
+      })),
+    })),
+    confirmed_daily_reports: state.reviews.filter((review) =>
+      review.date >= weekStart && review.date <= today
+    ).map((review) => ({
       date: review.date,
       account:
         review.snapshot.confirmed_interpretation ?? review.accomplishment,
       updates: review.commitmentUpdates ?? [],
     })),
-    task_history: state.tasks.map((task) => ({
+    task_history: state.tasks.filter((task) => relevantIds.has(task.id)).map((task) => ({
       ...task,
       commitment: taskCommitment(task),
       updates: [...state.reviews]
@@ -66,9 +81,6 @@ export function planningContext(state: State, candidates: Task[]) {
             .map((update) => ({
               date: review.date,
               note: update.note,
-              reported_account: review.accomplishment,
-              reported_blocker: review.blocker,
-              confirmed_account: review.snapshot.confirmed_interpretation,
               earlier_report_changed: review.snapshot.earlier_report_changed,
             })),
         ),
@@ -115,23 +127,4 @@ export function planningContext(state: State, candidates: Task[]) {
         }));
     }),
   };
-}
-
-export function deletedPlanningTasks(state: State): Task[] {
-  return state.audit
-    .filter((entry) => entry.action === "Task deleted with scheduled sessions")
-    .flatMap((entry) => {
-      if (state.tasks.some((task) => task.id === entry.recordId)) return [];
-      if (entry.deletedTask) return [entry.deletedTask];
-      // Older deletion records have only an ID. Recover their identity from
-      // the snapshots already saved with previous planner runs.
-      for (const run of [...state.aiRuns].reverse()) {
-        const history = run.snapshot.task_history;
-        if (!Array.isArray(history)) continue;
-        const task = history.find((item) => item?.id === entry.recordId);
-        const parsed = taskSchema.safeParse(task);
-        if (parsed.success) return [parsed.data];
-      }
-      return [];
-    });
 }

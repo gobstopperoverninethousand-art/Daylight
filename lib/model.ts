@@ -247,7 +247,6 @@ export const auditSchema = z.object({
   at: z.string(),
   action: z.string().max(400),
   recordId: id,
-  deletedTask: taskSchema.optional(),
 });
 export const stateSchema = z.object({
   schemaVersion: z.literal(1),
@@ -497,12 +496,11 @@ export function removeProject(
 }
 
 export function removeTask(state: State, id: string): boolean {
-  const task = state.tasks.find((task) => task.id === id);
-  if (!task) return false;
+  const exists = state.tasks.some((task) => task.id === id);
+  if (!exists) return false;
   state.tasks = state.tasks.filter((task) => task.id !== id);
   state.sessions = state.sessions.filter((session) => session.taskId !== id);
   audit(state, "Task deleted with scheduled sessions", id);
-  state.audit[state.audit.length - 1].deletedTask = structuredClone(task);
   return true;
 }
 export function validateReferences(s: State): State {
