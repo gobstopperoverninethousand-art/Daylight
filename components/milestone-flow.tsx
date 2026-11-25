@@ -2,11 +2,11 @@
 import { useId } from "react";
 import { formatDate, type Project } from "@/lib/model";
 
-const nodeWidth = 180;
-const nodeHeight = 82;
-const columnStep = 232;
-const rowStep = 100;
-const inset = 8;
+const nodeWidth = 196;
+const nodeHeight = 84;
+const columnStep = 248;
+const rowStep = 104;
+const inset = 12;
 
 export function MilestoneFlow({
   milestones,
@@ -52,6 +52,7 @@ export function MilestoneFlow({
   const positions = new Map(nodes.map((node) => [node.milestone.id, node]));
   const width = Math.max(...nodes.map((node) => node.x)) + nodeWidth + inset;
   const height = Math.max(...nodes.map((node) => node.y)) + nodeHeight + inset;
+
   return (
     <div
       className="milestone-flow"
@@ -79,7 +80,7 @@ export function MilestoneFlow({
               if (!parent) return null;
               const fromX = parent.x + nodeWidth,
                 fromY = parent.y + nodeHeight / 2;
-              const toX = x - 3,
+              const toX = x - 4,
                 toY = y + nodeHeight / 2;
               const mid = (fromX + toX) / 2;
               return (
@@ -88,6 +89,7 @@ export function MilestoneFlow({
                   d={`M ${fromX} ${fromY} C ${mid} ${fromY}, ${mid} ${toY}, ${toX} ${toY}`}
                   fill="none"
                   stroke="currentColor"
+                  strokeWidth="1.5"
                   markerEnd={`url(#${arrow})`}
                 />
               );
@@ -110,6 +112,7 @@ export function MilestoneFlow({
           const label = `${milestone.title}, ${date}, ${status}${dependencies.length ? ", after " + dependencies.join(", ") : ""}`;
           return (
             <button
+              type="button"
               key={milestone.id}
               className="milestone-flow-node"
               data-status={status}

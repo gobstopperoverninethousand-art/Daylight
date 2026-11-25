@@ -14,6 +14,7 @@ import {
   interpretationSchema,
 } from "@/lib/progress-update";
 import { Report } from "./review";
+
 export function DailyReviewDialog({
   state,
   date: initialDate,
@@ -43,36 +44,37 @@ export function DailyReviewDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState<Review | null>(null);
-  const destinations = updates.map((update) =>
-    progressDestinations(state, date, update.projectId),
+  const destinations = updates.map((u) =>
+    progressDestinations(state, date, u.projectId),
   );
   const source = JSON.stringify({ date, updates });
   const [overviewSource, setOverviewSource] = useState("");
   const [overviewError, setOverviewError] = useState("");
   const overviewCurrent = overviewSource === source;
+
   async function refreshOverview() {
     if (busy) return;
     setOverviewError("");
-    if (!updates.length || updates.some((update) => !update.note.trim()))
-      return;
+    if (!updates.length || updates.some((u) => !u.note.trim())) return;
     setBusy(true);
-      try {
-        const result = aiReady
-          ? await api("/api/review", {
-              mode: "overview",
-              state,
-              date,
-              updates,
-            })
-          : { overview: updates.map((update) => update.note.trim()).join(" ") };
-          setInterpretation(result.overview);
-          setOverviewSource(source);
-      } catch (error) {
-        setOverviewError((error as Error).message);
-      } finally {
-        setBusy(false);
-      }
+    try {
+      const result = aiReady
+        ? await api("/api/review", {
+            mode: "overview",
+            state,
+            date,
+            updates,
+          })
+        : { overview: updates.map((u) => u.note.trim()).join(" ") };
+      setInterpretation(result.overview);
+      setOverviewSource(source);
+    } catch (err) {
+      setOverviewError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
+
   async function interpret(refine = false) {
     setBusy(true);
     setError("");
@@ -99,9 +101,9 @@ export function DailyReviewDialog({
             }),
           )
         : { overview: raw, questions: [], updates: [{ keys: [], note: raw }] };
-      const organized = result.updates.map((update) => ({
-        ...update,
-        projectId: projectForKeys(state, update.keys),
+      const organized = result.updates.map((u) => ({
+        ...u,
+        projectId: projectForKeys(state, u.keys),
       }));
       setInterpretation(result.overview);
       setOverviewSource(JSON.stringify({ date, updates: organized }));
@@ -115,11 +117,14 @@ export function DailyReviewDialog({
       setBusy(false);
     }
   }
+
   function save() {
     setError("");
     try {
       if (!overviewCurrent)
-        throw Error("Refresh the overview to include your edited sections before saving.");
+        throw Error(
+          "Refresh the overview to include your edited sections before saving.",
+        );
       const expected = confirmReviewReplacement(state, date);
       if (expected === null) return;
       const account = updates.map((u) => u.note.trim()).join("\n\n");
@@ -185,6 +190,7 @@ export function DailyReviewDialog({
       setError((e as Error).message);
     }
   }
+
   return (
     <Dialog
       wide
@@ -200,209 +206,267 @@ export function DailyReviewDialog({
         if (!busy) onClose();
       }}
     >
-      {step === 0 && (
-        <>
-          <Field label="Report date">
-            <input
-              type="date"
-              max={workspaceDay(state)}
-              value={date}
-              onChange={(e) => {
-                if (e.target.value) setDate(e.target.value);
-              }}
-            />
-          </Field>
-          <Field label="What moved forward, what remains, and what else matters?">
-            <textarea
-              rows={8}
-              value={raw}
-              onChange={(e) => setRaw(e.target.value)}
-            />
-          </Field>
-          <p className="form-hint">
-            Describe what you worked on, finished, or left unfinished, and how
-            it went. Mention work that was easier, harder, better, or less
-            successful than expected; changed scope or estimates; blockers or
-            dependencies; and anything postponed and why. Include approaching
-            deadlines, changed requirements, or limited future availability. If
-            you made enough progress to leave something alone for a while, say
-            so. Name the task, milestone, deadline or project when you can. You
-            may discuss several pieces of work and miscellaneous context in one
-            update. These are optional suggestions, not questions you must all
-            answer.
-          </p>
-        </>
-      )}
-      {step === 1 && (
-        <>
-          <p className="report-date-badge">Report date · {formatDate(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</p>
-          <p className="form-hint">
-            Edit each organized update below. Its final text saves to every
-            selected destination and to the daily and weekly reports. The
-            overview is separate and saves only to daily and weekly reports.
-          </p>
-          {updates.map((u, i) => (
-            <section className="organized-update" key={i}>
-              <div className="update-left">
-              <Field label={`Update ${i + 1}`}>
+      <div className="daily-review-flow">
+        <div
+          className="daily-review-stepper"
+          aria-label="Progress update steps"
+        >
+          {["1. Write update", "2. Verify & connect", "3. Saved report"].map(
+            (label, index) => (
+              <div
+                key={label}
+                className={
+                  "review-step-pill " +
+                  (step === index ? "active" : step > index ? "done" : "")
+                }
+              >
+                {label}
+              </div>
+            ),
+          )}
+        </div>
+
+        {step === 0 && (
+          <>
+            <Field label="Report date">
+              <input
+                type="date"
+                max={workspaceDay(state)}
+                value={date}
+                onChange={(e) => {
+                  if (e.target.value) setDate(e.target.value);
+                }}
+              />
+            </Field>
+            <Field label="What moved forward, what remains, and what else matters?">
+              <textarea
+                rows={7}
+                value={raw}
+                placeholder="Write naturally about what you finished, what ran longer, blockers, or changed priorities…"
+                onChange={(e) => setRaw(e.target.value)}
+              />
+            </Field>
+            <p className="form-hint">
+              Describe what you worked on, finished, or left unfinished, and how
+              it went. Mention changed scope or estimates, blockers or
+              dependencies, and anything postponed. Name the task, milestone,
+              deadline, or project when you can.
+            </p>
+          </>
+        )}
+
+        {step === 1 && (
+          <>
+            <p className="report-date-badge">
+              Report date ·{" "}
+              {formatDate(date, {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </p>
+            <p className="form-hint">
+              Edit each organized update below. Its final text saves to every
+              selected destination and to the daily and weekly reports. The
+              overview is separate and saves only to daily and weekly reports.
+            </p>
+            {updates.map((u, i) => (
+              <section className="organized-update" key={i}>
+                <div className="update-left">
+                  <Field label={`Update ${i + 1}`}>
+                    <textarea
+                      rows={5}
+                      value={u.note}
+                      onChange={(e) =>
+                        setUpdates((old) =>
+                          old.map((v, j) =>
+                            i === j ? { ...v, note: e.target.value } : v,
+                          ),
+                        )
+                      }
+                    />
+                  </Field>
+                  <p className="form-hint">
+                    {u.keys.length
+                      ? "The edited text will also be saved to this milestone or deadline."
+                      : "No project destination selected; retained in daily and weekly reports."}
+                  </p>
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    onClick={() =>
+                      setUpdates((old) =>
+                        old.map((v, j) => (i === j ? { ...v, keys: [] } : v)),
+                      )
+                    }
+                  >
+                    Clear destinations
+                  </button>
+                </div>
+                <div className="update-right">
+                  <Field label="Project">
+                    <select
+                      value={u.projectId}
+                      onChange={(e) =>
+                        setUpdates((old) =>
+                          old.map((v, j) =>
+                            i === j
+                              ? { ...v, projectId: e.target.value, keys: [] }
+                              : v,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">Standalone</option>
+                      {state.projects
+                        .filter((project) => project.status !== "completed")
+                        .map((project) => (
+                          <option key={project.id} value={project.id}>
+                            {project.title}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                  <Field label="Save this edited update to">
+                    <select
+                      value={u.keys[0] ?? ""}
+                      onChange={(e) =>
+                        setUpdates((old) =>
+                          old.map((v, j) =>
+                            i === j
+                              ? {
+                                  ...v,
+                                  keys: e.target.value ? [e.target.value] : [],
+                                }
+                              : v,
+                          ),
+                        )
+                      }
+                    >
+                      <option value="">Daily and weekly reports only</option>
+                      {destinations[i].map((d) => (
+                        <option key={d.key} value={d.key}>
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    onClick={() =>
+                      setUpdates((old) => old.filter((_, j) => i !== j))
+                    }
+                  >
+                    Remove update
+                  </button>
+                </div>
+              </section>
+            ))}
+            <div>
+              <button
+                type="button"
+                className="button secondary small"
+                onClick={() =>
+                  setUpdates((old) => [
+                    ...old,
+                    { keys: [], note: "", projectId: "" },
+                  ])
+                }
+              >
+                Add update
+              </button>
+            </div>
+            <Field label="Today's overall progress · daily and weekly reports only">
+              <p
+                className={`overview-status ${overviewCurrent ? "current" : "pending"}`}
+                role="status"
+              >
+                {overviewCurrent
+                  ? "✓ Overview up to date"
+                  : "Needs refresh · sections have changed"}
+              </p>
+              <p
+                className="progress-overview"
+                style={{ whiteSpace: "pre-wrap" }}
+              >
+                {interpretation}
+              </p>
+            </Field>
+            <div className="overview-refresh-row">
+              <p className="form-hint">
+                The overview refreshes only when you ask. It saves only to daily
+                and weekly reports.
+              </p>
+              <button
+                type="button"
+                className="button secondary small"
+                disabled={
+                  busy ||
+                  overviewCurrent ||
+                  !updates.length ||
+                  updates.some((u) => !u.note.trim())
+                }
+                onClick={() => void refreshOverview()}
+              >
+                {busy ? "Working…" : "Refresh overview"}
+              </button>
+            </div>
+            {overviewError && (
+              <div className="error" role="alert">
+                {overviewError}{" "}
+                <button
+                  type="button"
+                  className="button secondary small"
+                  disabled={busy}
+                  onClick={() => void refreshOverview()}
+                >
+                  Retry overview
+                </button>
+              </div>
+            )}
+            {questions.map((q, i) => (
+              <Field key={i} label={q}>
                 <textarea
-                  rows={5}
-                  value={u.note}
+                  value={answers[i] ?? ""}
                   onChange={(e) =>
-                    setUpdates((old) =>
-                      old.map((v, j) =>
-                        i === j ? { ...v, note: e.target.value } : v,
-                      ),
-                    )
+                    setAnswers((old) => {
+                      const next = [...old];
+                      next[i] = e.target.value;
+                      return next;
+                    })
                   }
                 />
               </Field>
-              <p className="form-hint">
-                {u.keys.length
-                  ? "The edited text will also be saved to this milestone or deadline."
-                  : "No project destination selected; retained in daily and weekly reports."}
-              </p>
-              <button className="button secondary small" onClick={() => setUpdates(old => old.map((v, j) => i === j ? { ...v, keys: [] } : v))}>Clear destinations</button>
-              </div>
-              <div className="update-right">
-              <Field label="Project">
-                <select
-                  value={u.projectId}
-                  onChange={(e) =>
-                    setUpdates((old) =>
-                      old.map((v, j) =>
-                        i === j
-                          ? { ...v, projectId: e.target.value, keys: [] }
-                          : v,
-                      ),
-                    )
-                  }
+            ))}
+            {answers.some((a) => a.trim()) && (
+              <div>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={busy}
+                  onClick={() => void interpret(true)}
                 >
-                  <option value="">Standalone</option>
-                  {state.projects
-                    .filter((project) => project.status !== "completed")
-                    .map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.title}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-              <Field label="Save this edited update to">
-                <select
-                  value={u.keys[0] ?? ""}
-                  onChange={(e) =>
-                    setUpdates((old) =>
-                      old.map((v, j) =>
-                        i === j
-                          ? {
-                              ...v,
-                              keys: e.target.value ? [e.target.value] : [],
-                            }
-                          : v,
-                      ),
-                    )
-                  }
-                >
-                  <option value="">Daily and weekly reports only</option>
-                  {destinations[i].map((d) => (
-                    <option key={d.key} value={d.key}>
-                      {d.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <button
-                className="button secondary small"
-                onClick={() =>
-                  setUpdates((old) => old.filter((_, j) => i !== j))
-                }
-              >
-                Remove update
-              </button>
+                  Incorporate answers and review again
+                </button>
               </div>
-            </section>
-          ))}
-          <button
-            className="button secondary small"
-            onClick={() =>
-              setUpdates((old) => [
-                ...old,
-                { keys: [], note: "", projectId: "" },
-              ])
-            }
-          >
-            Add update
-          </button>
-          <Field label="Today's overall progress · daily and weekly reports only">
-            <p
-              className={`overview-status ${overviewCurrent ? "current" : "pending"}`}
-              role="status"
-            >
-              {overviewCurrent
-                ? "✓ Overview up to date"
-                : "Needs refresh · sections have changed"}
-            </p>
-            <p className="progress-overview" style={{ whiteSpace: "pre-wrap" }}>
-              {interpretation}
-            </p>
-          </Field>
-          <p className="form-hint">
-            The overview refreshes only when you ask. It saves only to daily and weekly reports.
+            )}
+          </>
+        )}
+
+        {step === 2 && saved && <Report review={saved} />}
+        {error && (
+          <p className="error" role="alert">
+            {error}
           </p>
-          <button
-            className="button secondary small"
-            disabled={busy || overviewCurrent || !updates.length || updates.some((update) => !update.note.trim())}
-            onClick={() => void refreshOverview()}
-          >
-            {busy ? "Working…" : "Refresh overview"}
-          </button>
-          {overviewError && (
-            <p className="error" role="alert">
-              {overviewError}{" "}
-              <button
-                className="button secondary small"
-                disabled={busy}
-                onClick={() => void refreshOverview()}
-              >
-                Retry overview
-              </button>
-            </p>
-          )}
-          {questions.map((q, i) => (
-            <Field key={i} label={q}>
-              <textarea
-                value={answers[i] ?? ""}
-                onChange={(e) =>
-                  setAnswers((old) => {
-                    const next = [...old];
-                    next[i] = e.target.value;
-                    return next;
-                  })
-                }
-              />
-            </Field>
-          ))}
-          {answers.some((a) => a.trim()) && (
-            <button
-              className="button secondary"
-              disabled={busy}
-              onClick={() => interpret(true)}
-            >
-              Incorporate answers and review again
-            </button>
-          )}
-        </>
-      )}
-      {step === 2 && saved && <Report review={saved} />}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+        )}
+      </div>
+
       <div className="dialog-actions">
         {step === 1 && (
           <button
+            type="button"
             className="button secondary"
             disabled={busy}
             onClick={() => setStep(0)}
@@ -410,7 +474,17 @@ export function DailyReviewDialog({
             Back
           </button>
         )}
+        <span className="spacer" />
         <button
+          type="button"
+          className="button secondary"
+          disabled={busy}
+          onClick={onClose}
+        >
+          {step === 2 ? "Close" : "Cancel"}
+        </button>
+        <button
+          type="button"
           className="button primary"
           disabled={
             busy ||
@@ -418,7 +492,7 @@ export function DailyReviewDialog({
             (step === 1 &&
               (!overviewCurrent ||
                 !updates.length ||
-                updates.some((update) => !update.note.trim()) ||
+                updates.some((u) => !u.note.trim()) ||
                 !interpretation.trim() ||
                 answers.some((a) => a.trim())))
           }

@@ -1,48 +1,41 @@
 "use client";
-import {
-  confirmReviewReplacement,
-  reviewContextBefore,
-  saveDatedReview,
-} from "@/lib/review-history";
 import { DailyReviewDialog } from "./daily-review-dialog";
 import { progressDestinations } from "@/lib/progress-update";
 import { useState } from "react";
 import {
   Sparkles,
-  Check,
   ArrowRight,
-  Clock3,
   FileText,
   ChevronDown,
   CalendarDays,
+  PenLine,
 } from "lucide-react";
 import {
   State,
   Outcome,
   addDays,
   formatDate,
-  durationLabel,
-  displayTime,
-  uid,
   Review,
-  audit,
 } from "@/lib/model";
 import {
-  makeSnapshot,
-  assess,
-  RULE_VERSION,
-  projectHealth,
-} from "@/lib/engine";
-import { ViewProps } from "./work-views";
-import { deadlineEntries } from "@/lib/deadlines";
-import { evidenceKey, workspaceDay } from "@/lib/ai-freshness";
-import { Badge, Field, OutcomeSelect, Empty, SectionHead } from "./ui";
+  DEFAULT_EXPERIENCE,
+  isWildExperience,
+  type ExperienceId,
+} from "@/lib/experiences";
+import { ViewProps, PageHeading } from "./work-views";
+import { WildProgressView } from "./wild-work-views";
+import { workspaceDay } from "@/lib/ai-freshness";
+import { Badge, Empty } from "./ui";
+
 export function Progress({
   state,
   update,
   edit,
   notify,
   setOutcome,
+  scheduleTask,
+  onNavigatePlanner,
+  experience = DEFAULT_EXPERIENCE,
   api,
   aiReady,
   initialDate,
@@ -52,76 +45,75 @@ export function Progress({
   edit: ViewProps["edit"];
   notify: ViewProps["notify"];
   setOutcome: (kind: string, id: string, date: string, value: Outcome) => void;
+  scheduleTask?: ViewProps["scheduleTask"];
+  onNavigatePlanner?: ViewProps["onNavigatePlanner"];
+  experience?: ExperienceId;
   api: (path: string, body?: unknown, method?: string) => Promise<any>;
   aiReady: boolean;
   initialDate?: string;
 }) {
-  const [commitmentKey, setCommitmentKey] = useState("");
   const [date, setDate] = useState(() => initialDate ?? workspaceDay(state)),
-    [answers, setAnswers] = useState<{
-      focus?: string;
-      blocker?: string;
-      accomplishment?: string;
-    }>({}),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(""),
-    [tab, setTab] = useState<"today" | "history" | "week">("today");
-  const sessions = state.sessions.filter((s) => s.date === date),
-    review = state.reviews
-      .filter((r) => r.date === date)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0],
-    needsBlocker = sessions.some((s) => s.outcome === "blocked" && !s.note);
-  const focus = answers.focus ?? review?.focus ?? "";
-  const blocker = answers.blocker ?? review?.blocker ?? "";
-  const accomplishment = answers.accomplishment ?? review?.accomplishment ?? "";
-  const setFocus = (focus: string) => setAnswers((a) => ({ ...a, focus }));
-  const setBlocker = (blocker: string) =>
-    setAnswers((a) => ({ ...a, blocker }));
-  const setAccomplishment = (accomplishment: string) =>
-    setAnswers((a) => ({ ...a, accomplishment }));
-  const inputKey = evidenceKey(state, date, [focus, blocker, accomplishment]);
-  const stale = review && review.inputKey !== inputKey;
-  const completed = sessions.filter((s) => s.outcome === "completed").length,
-    confirmed = sessions.filter((s) => s.outcome !== "pending").length;
-  const [editing, setEditing] = useState(false);
-  async function generate(_useAI: boolean) {
-    setEditing(true);
+    [tab, setTab] = useState<"today" | "history" | "week">("today"),
+    [editing, setEditing] = useState(false);
+
+  if (isWildExperience(experience)) {
+    return (
+      <WildProgressView
+        experience={experience}
+        state={state}
+        update={update}
+        edit={edit}
+        notify={notify}
+        setOutcome={setOutcome}
+        scheduleTask={scheduleTask ?? (() => {})}
+        onNavigatePlanner={onNavigatePlanner ?? (() => {})}
+        api={api}
+        aiReady={aiReady}
+        initialDate={initialDate}
+      />
+    );
   }
-  return (
-    <>
-      {editing && (
-        <DailyReviewDialog
-          state={state}
-          date={date}
-          aiReady={aiReady}
-          api={api}
-          update={update}
-          onClose={() => setEditing(false)}
-        />
-      )}
-      <button className="button primary" onClick={() => setEditing(true)}>
-        Write or edit progress update
-      </button>
-      <div className="review-toolbar">
-        <div className="tab-row">
-          {(
-            [
-              ["today", "Daily review"],
-              ["week", "Weekly accumulation"],
-              ["history", "Review history"],
-            ] as const
-          ).map(([v, l]) => (
-            <button
-              key={v}
-              onClick={() => setTab(v)}
-              className={tab === v ? "active" : ""}
-            >
-              {l}
-            </button>
-          ))}
-        </div>
+
+  const sortedReviews = state.reviews
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const review = sortedReviews.find((r) => r.date === date);
+
+  const dialog = editing && (
+    <DailyReviewDialog
+      state={state}
+      date={date}
+      aiReady={aiReady}
+      api={api}
+      update={update}
+      onClose={() => setEditing(false)}
+    />
+  );
+
+  const toolbar = (
+    <div className="review-toolbar">
+      <div className="tab-row" role="group" aria-label="Progress views">
+        {(
+          [
+            ["today", experience === "bauhaus" ? "01 Daily review" : "Daily review"],
+            ["week", experience === "bauhaus" ? "02 Weekly window" : "Weekly accumulation"],
+            ["history", experience === "bauhaus" ? "03 Archive" : "Review history"],
+          ] as const
+        ).map(([v, l]) => (
+          <button
+            type="button"
+            key={v}
+            onClick={() => setTab(v)}
+            aria-pressed={tab === v}
+            className={tab === v ? "active" : ""}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+      <div className="review-toolbar-actions">
         <label className="date-picker">
-          <CalendarDays size={16} />
+          <CalendarDays size={15} />
           <input
             type="date"
             aria-label="Review date"
@@ -129,66 +121,159 @@ export function Progress({
             value={date}
             onChange={(e) => {
               if (!e.target.value) return;
-              setAnswers({});
-              setCommitmentKey("");
               setDate(e.target.value);
             }}
           />
         </label>
+        <button
+          type="button"
+          className="button primary"
+          onClick={() => setEditing(true)}
+        >
+          <PenLine size={15} />
+          Write or edit progress update
+        </button>
       </div>
-      {tab === "today" ? (
-        review ? (
-          <Report review={review} />
+    </div>
+  );
+
+  const content =
+    tab === "today" ? (
+      review ? (
+        <Report review={review} />
+      ) : (
+        <div className="panel review-empty-panel">
+          <Empty
+            title={`No confirmed report for ${formatDate(date, { month: "long", day: "numeric" })}`}
+            description="Write an update describing what moved forward, blockers, or scope changes to generate a verified daily record."
+            label="Write progress update"
+            action={() => setEditing(true)}
+          />
+        </div>
+      )
+    ) : tab === "history" ? (
+      <div className="history-list">
+        {sortedReviews.length ? (
+          sortedReviews.map((r) => (
+            <details key={r.id} className="history-item">
+              <summary>
+                <span>
+                  <FileText size={16} />
+                  <strong>
+                    {formatDate(r.date, {
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </strong>
+                  <small className="tabular-num">
+                    {new Date(r.createdAt).toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
+                  </small>
+                </span>
+                <Badge tone={r.source === "ai" ? "lavender" : "neutral"}>
+                  {r.source === "ai" ? "AI assessment" : "Rules-based"}
+                </Badge>
+              </summary>
+              <Report review={r} />
+            </details>
+          ))
         ) : (
-          <p>
-            No confirmed report for this date. Write an update to get started.
-          </p>
-        )
-      ) : tab === "history" ? (
-        <div className="history-list">
-          {state.reviews.length ? (
-            state.reviews
-              .slice()
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-              .map((r) => (
-                <details key={r.id} className="history-item">
-                  <summary>
-                    <span>
-                      <FileText size={17} />
-                      <strong>
-                        {formatDate(r.date, {
-                          month: "long",
-                          day: "numeric",
-                          year: "numeric",
-                        })}
-                      </strong>
-                      <small>
-                        {new Date(r.createdAt).toLocaleTimeString([], {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
-                      </small>
-                    </span>
-                    <Badge tone={r.source === "ai" ? "lavender" : "neutral"}>
-                      {r.source === "ai" ? "AI assessment" : "Rules-based"}
-                    </Badge>
-                  </summary>
-                  <Report review={r} />
-                </details>
-              ))
-          ) : (
+          <div className="panel">
             <Empty
               title="Your progress story starts here."
               description="Saved reviews will appear here with the evidence used to create them."
+              label="Write progress update"
+              action={() => setEditing(true)}
             />
-          )}
+          </div>
+        )}
+      </div>
+    ) : (
+      <WeeklyProgress state={state} date={date} />
+    );
+
+  if (experience === "cockpit") {
+    return (
+      <div className="classic-work is-cockpit">
+        {dialog}
+        <PageHeading
+          eyebrow="SYSTEM LOGBOOK"
+          title="Progress Telemetry"
+          subtitle="Select any daily entry in the index or write a confirmed daily log."
+        />
+        {toolbar}
+        <div className="cockpit-master-detail">
+          <aside className="cockpit-master-list panel" aria-label="Saved records index">
+            <div className="wild-subhead">
+              <strong>Recorded Dates</strong>
+              <span className="tabular-num">{sortedReviews.length}</span>
+            </div>
+            {sortedReviews.length ? (
+              <div className="cockpit-proj-rows">
+                {sortedReviews.map((r) => (
+                  <button
+                    type="button"
+                    key={r.id}
+                    className={
+                      "project-open " + (r.date === date ? "is-selected" : "")
+                    }
+                    onClick={() => {
+                      setDate(r.date);
+                      setTab("today");
+                    }}
+                  >
+                    <div className="cockpit-entry-row">
+                      <strong className="tabular-num">{formatDate(r.date)}</strong>
+                      <small>{r.source === "ai" ? "AI" : "Manual"}</small>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No saved daily records yet.</p>
+            )}
+          </aside>
+          <div className="cockpit-detail-canvas">{content}</div>
         </div>
-      ) : (
-        <WeeklyProgress state={state} date={date} />
-      )}
-    </>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={
+        "classic-work is-" +
+        experience +
+        (experience === "zen" ? " zen-centered-sheet" : "")
+      }
+    >
+      {dialog}
+      <PageHeading
+        eyebrow={
+          experience === "broadsheet"
+            ? "CHRONICLE & REFLECTION"
+            : experience === "bauhaus"
+              ? "LOG 05 // REFLECTION"
+              : "PROGRESS & REFLECTION"
+        }
+        title={
+          experience === "broadsheet"
+            ? "Progress Dispatch"
+            : experience === "zen"
+              ? "Evening Reflection"
+              : "Progress"
+        }
+        subtitle="Write what moved forward in your own words, verify project connections, and build daily & weekly records."
+      />
+      {toolbar}
+      {content}
+    </div>
   );
 }
+
 export function Report({ review }: { review: Review }) {
   const a = review.assessment;
   if (
@@ -196,37 +281,58 @@ export function Report({ review }: { review: Review }) {
   )
     return (
       <article className="report">
-        <h2>{formatDate(review.date, { month: "long", day: "numeric" })}</h2>
+        <div className="report-head">
+          <span className="report-mark">
+            <FileText size={19} />
+          </span>
+          <div>
+            <span className="eyebrow">CONFIRMED DAILY RECORD</span>
+            <h2>
+              {formatDate(review.date, {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+              })}
+            </h2>
+          </div>
+          <Badge tone={review.source === "ai" ? "lavender" : "neutral"}>
+            {review.source === "ai" ? "AI assisted" : "Manual"}
+          </Badge>
+        </div>
         {review.version !== "confirmed-progress-v2" && (
-          <p style={{ whiteSpace: "pre-wrap" }}>{review.accomplishment}</p>
+          <p className="report-body-text">{review.accomplishment}</p>
         )}
-        {Array.isArray(review.snapshot.verified_updates) &&
-          review.snapshot.verified_updates.map(
-            (
-              item: { key: string; note: string; label?: string },
-              index: number,
-            ) => (
-              <div key={index}>
-                <small>{item.label || "Daily report"}</small>
-                <p style={{ whiteSpace: "pre-wrap" }}>{item.note}</p>
-              </div>
-            ),
-          )}
+        {Array.isArray(review.snapshot.verified_updates) && (
+          <div className="verified-updates-list">
+            {review.snapshot.verified_updates.map(
+              (
+                item: { key: string; note: string; label?: string },
+                index: number,
+              ) => (
+                <div className="verified-update-item" key={index}>
+                  <span className="eyebrow">
+                    {item.label || "Daily report"}
+                  </span>
+                  <p className="report-body-text">{item.note}</p>
+                </div>
+              ),
+            )}
+          </div>
+        )}
         {typeof review.snapshot.daily_overview === "string" && (
-          <section>
-            <h3>Today’s overall progress</h3>
-            <p style={{ whiteSpace: "pre-wrap" }}>
-              {review.snapshot.daily_overview}
-            </p>
+          <section className="next-action">
+            <span>TODAY’S OVERALL PROGRESS</span>
+            <p className="report-body-text">{review.snapshot.daily_overview}</p>
           </section>
         )}
       </article>
     );
+
   return (
     <article className="report">
       <div className="report-head">
         <span className="report-mark">
-          <Sparkles size={21} />
+          <Sparkles size={19} />
         </span>
         <div>
           <span className="eyebrow">YOUR DAILY PERSPECTIVE</span>
@@ -272,7 +378,7 @@ export function Report({ review }: { review: Review }) {
       </div>
       <details className="report-details">
         <summary>
-          Evidence & uncertainty
+          Evidence &amp; uncertainty
           <ChevronDown size={15} />
         </summary>
         <h4>Recorded evidence</h4>
@@ -329,37 +435,50 @@ export function WeeklyProgress({
   );
   return (
     <section className="weekly-panel">
-      <h2>
-        Weekly progress · {formatDate(weekStart)} — {formatDate(date)}
-      </h2>
-      <p>Your confirmed daily updates, accumulated in full.</p>
+      <div className="weekly-header panel">
+        <span className="eyebrow">7-DAY WINDOW</span>
+        <h2>
+          {formatDate(weekStart)} — {formatDate(date)}
+        </h2>
+        <p>Your confirmed daily updates, accumulated in full.</p>
+      </div>
       {reports.length ? (
-        reports.map((r) => (
-          <article key={r.id} className="report">
-            <h3>{formatDate(r.date)}</h3>
-            <p style={{ whiteSpace: "pre-wrap" }}>
-              {typeof r.snapshot.confirmed_interpretation === "string"
-                ? r.snapshot.confirmed_interpretation
-                : r.accomplishment}
-            </p>
-            {typeof r.snapshot.daily_overview === "string" && (
-              <>
-                <h4>Overall progress</h4>
-                <p style={{ whiteSpace: "pre-wrap" }}>
-                  {r.snapshot.daily_overview}
-                </p>
-              </>
-            )}
-            {(r.commitmentUpdates ?? []).map((u, i) => (
-              <div key={i}>
-                <strong>{destinations.get(u.key) ?? u.key}</strong>
-                <p style={{ whiteSpace: "pre-wrap" }}>{u.note}</p>
-              </div>
-            ))}
-          </article>
-        ))
+        <div className="weekly-reports-stack">
+          {reports.map((r) => (
+            <article key={r.id} className="report">
+              <h3>
+                {formatDate(r.date, {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </h3>
+              <p className="report-body-text">
+                {typeof r.snapshot.confirmed_interpretation === "string"
+                  ? r.snapshot.confirmed_interpretation
+                  : r.accomplishment}
+              </p>
+              {typeof r.snapshot.daily_overview === "string" && (
+                <div className="weekly-overview-block">
+                  <span className="eyebrow">OVERALL PROGRESS</span>
+                  <p className="report-body-text">
+                    {r.snapshot.daily_overview}
+                  </p>
+                </div>
+              )}
+              {(r.commitmentUpdates ?? []).map((u, i) => (
+                <div className="verified-update-item" key={i}>
+                  <strong>{destinations.get(u.key) ?? u.key}</strong>
+                  <p className="report-body-text">{u.note}</p>
+                </div>
+              ))}
+            </article>
+          ))}
+        </div>
       ) : (
-        <p>No confirmed updates in this period.</p>
+        <div className="panel">
+          <p>No confirmed updates in this period.</p>
+        </div>
       )}
     </section>
   );

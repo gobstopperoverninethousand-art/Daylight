@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, ReactNode } from "react";
 import { X, Plus, ArrowUpRight, Inbox } from "lucide-react";
+
 export function IconButton({
   label,
   children,
@@ -16,6 +17,7 @@ export function IconButton({
 }) {
   return (
     <button
+      type="button"
       className={"icon-button " + className}
       title={label}
       aria-label={label}
@@ -26,6 +28,7 @@ export function IconButton({
     </button>
   );
 }
+
 export function Badge({
   children,
   tone = "neutral",
@@ -35,6 +38,7 @@ export function Badge({
 }) {
   return <span className={"badge " + tone}>{children}</span>;
 }
+
 export function Empty({
   title,
   description,
@@ -49,12 +53,12 @@ export function Empty({
   return (
     <div className="empty">
       <div className="empty-icon">
-        <Inbox size={23} />
+        <Inbox size={22} strokeWidth={1.75} />
       </div>
       <h3>{title}</h3>
       <p>{description}</p>
       {action && (
-        <button className="button secondary" onClick={action}>
+        <button type="button" className="button secondary" onClick={action}>
           <Plus size={15} />
           {label}
         </button>
@@ -62,6 +66,7 @@ export function Empty({
     </div>
   );
 }
+
 export function Dialog({
   title,
   subtitle,
@@ -106,13 +111,14 @@ export function Dialog({
           {subtitle && <p>{subtitle}</p>}
         </div>
         <IconButton label="Close dialog" onClick={onClose}>
-          <X size={20} />
+          <X size={18} />
         </IconButton>
       </div>
       {children}
     </dialog>
   );
 }
+
 export function Field({
   label,
   children,
@@ -130,6 +136,7 @@ export function Field({
     </label>
   );
 }
+
 export function SectionHead({
   title,
   subtitle,
@@ -148,7 +155,7 @@ export function SectionHead({
         {subtitle && <p>{subtitle}</p>}
       </div>
       {action && (
-        <button className="text-button" onClick={action}>
+        <button type="button" className="text-button" onClick={action}>
           {label}
           <ArrowUpRight size={14} />
         </button>
@@ -156,6 +163,7 @@ export function SectionHead({
     </div>
   );
 }
+
 export const DAYS = [
   "Sunday",
   "Monday",
@@ -165,6 +173,7 @@ export const DAYS = [
   "Friday",
   "Saturday",
 ];
+
 export const OUTCOMES = [
   ["pending", "Not recorded"],
   ["completed", "Completed"],
@@ -174,6 +183,7 @@ export const OUTCOMES = [
   ["blocked", "Blocked"],
   ["skipped", "Skipped"],
 ] as const;
+
 export function OutcomeSelect({
   value,
   onChange,
@@ -192,9 +202,9 @@ export function OutcomeSelect({
       value={value}
       onChange={(e) => onChange(e.target.value)}
     >
-      {OUTCOMES.map(([key, label]) => (
+      {OUTCOMES.map(([key, itemLabel]) => (
         <option value={key} key={key}>
-          {label}
+          {itemLabel}
         </option>
       ))}
     </select>

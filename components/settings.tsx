@@ -25,6 +25,8 @@ import { useWorkspace } from "@/lib/use-workspace";
 import { browserDb } from "@/lib/supabase";
 import { PageHeading } from "./work-views";
 import { Field, Badge, DAYS } from "./ui";
+import type { ExperienceId } from "@/lib/experiences";
+import { ExperienceGallery } from "./experience-switcher";
 export type Health = {
   supabaseConfigured: boolean;
   googleConfigured: boolean;
@@ -51,6 +53,8 @@ export function Settings({
   sync,
   busy,
   notify,
+  experience,
+  onChangeExperience,
 }: {
   workspace: ReturnType<typeof useWorkspace>;
   health: Health | null;
@@ -58,6 +62,8 @@ export function Settings({
   sync: () => void;
   busy: boolean;
   notify: (s: string) => void;
+  experience?: ExperienceId;
+  onChangeExperience?: (next: ExperienceId) => void;
 }) {
   const { state, update, auth, mode } = workspace;
   const [message, setMessage] = useState(""),
@@ -109,6 +115,9 @@ export function Settings({
         title="A few thoughtful settings."
         subtitle="Your availability, your connections, and a copy of your work."
       />
+      {experience && onChangeExperience && (
+        <ExperienceGallery value={experience} onChange={onChangeExperience} />
+      )}
       <div className="settings-grid">
         <section className="panel">
           <div className="settings-heading">
@@ -266,17 +275,8 @@ export function Settings({
                 </p>
                 <button
                   type="button"
-                  className="button secondary"
+                  className="button secondary google-signin-button"
                   disabled={loading || !health?.supabaseConfigured}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 10,
-                    background: "#fff",
-                    color: "#3c4043",
-                    border: "1px solid #dadce0",
-                    fontWeight: 500,
-                  }}
                   onClick={() =>
                     void action(async () => {
                       const db = browserDb();

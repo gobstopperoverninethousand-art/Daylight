@@ -10,6 +10,9 @@ import {
   Flag,
   Repeat2,
   CalendarDays,
+  Sparkles,
+  RefreshCw,
+  GripVertical,
 } from "lucide-react";
 import {
   State,
@@ -30,12 +33,44 @@ import {
   calendarEventIntervals,
   recommendations,
   scheduledTaskIds,
+  taskDue,
   zonedParts,
 } from "@/lib/engine";
 import { EditorState } from "./editor";
 import type { EventDrop } from "@/lib/google-event-edit";
 import { IconButton, OutcomeSelect } from "./ui";
 import { DeadlineStrip } from "./deadline-strip";
+import {
+  getExperience,
+  isWildExperience,
+  type ExperienceId,
+} from "@/lib/experiences";
+import {
+  ExperiencePlannerHeader,
+  TodayExecutionStream,
+} from "./experience-chrome";
+import {
+  MissionPlanner,
+  Retro98Planner,
+  SundialPlanner,
+  TerminalPlanner,
+  TimelinePlanner,
+  type WildNavView,
+  type WildPlannerProps,
+} from "./wild-planners";
+import {
+  BlueprintPlanner,
+  GalleryPlanner,
+  NotebookPlanner,
+  TransitPlanner,
+} from "./wild-planners-extra";
+import {
+  ArenaPlanner,
+  ConstellationPlanner,
+  SynthPlanner,
+  ZinePlanner,
+} from "./wild-planners-extra2";
+
 const sessionDrag = "application/daylight-session";
 const googleEventDrag = "application/daylight-google-event";
 const taskDrag = "application/daylight-task";
@@ -46,12 +81,14 @@ const snap = (minutes: number) =>
   Math.round(minutes / calendarStep) * calendarStep;
 const clamp = (value: number, lower: number, upper: number) =>
   Math.min(upper, Math.max(lower, value));
+
 type SessionTiming = {
   id: string;
   date: string;
   start: number;
   duration: number;
 };
+
 type ResizeGesture = {
   session: SessionTiming;
   edge: "start" | "end";
@@ -77,50 +114,80 @@ function resizedSession(
       session.start,
   };
 }
+
 const calendarViews = ["Day", "Week", "Month", "Year", "Year Columns"] as const;
 export type CalendarView = (typeof calendarViews)[number];
+
 function TaskCard({
   task,
+  projectName,
+  dueDate,
   reason,
+  showReason,
   onSchedule,
   onEdit,
 }: {
   task: Task;
+  projectName?: string;
+  dueDate: string | null;
   reason?: string;
+  showReason: boolean;
   onSchedule: () => void;
   onEdit: () => void;
 }) {
+  const durationText = durationLabel(task.remaining ?? task.estimate);
+  const metaParts = [
+    projectName || (task.importance === "high" ? "High priority" : null),
+    dueDate ? `Due ${formatDate(dueDate, { month: "short", day: "numeric" })}` : null,
+  ].filter(Boolean);
+
   return (
     <article
-      className="task-card"
+      className={"task-card " + (task.importance === "high" ? "is-priority" : "")}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData(taskDrag, task.id);
         e.dataTransfer.effectAllowed = "copy";
       }}
     >
-      <button
-        className="plain task-title"
-        title={reason}
-        aria-description={reason}
-        onClick={onEdit}
-      >
-        {task.title}
-      </button>
-      <span className="todo-duration">
-        {durationLabel(task.remaining ?? task.estimate)}
+      <span className="task-drag-grip" aria-hidden="true">
+        <GripVertical size={13} />
       </span>
-      <button
-        className="schedule-button"
-        onClick={onSchedule}
-        title="Choose a time"
-        aria-label={"Schedule " + task.title}
-      >
-        <Plus size={14} />
-      </button>
+      <div className="task-card-main">
+        <button
+          type="button"
+          className="plain task-title"
+          title={reason}
+          aria-description={reason}
+          onClick={onEdit}
+        >
+          {task.title}
+        </button>
+        {(metaParts.length > 0 || (showReason && reason)) && (
+          <div className="task-card-meta">
+            {metaParts.length > 0 && <span>{metaParts.join(" · ")}</span>}
+            {showReason && reason && (
+              <p className="task-card-reason">{reason}</p>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="task-card-aside">
+        <span className="todo-duration">{durationText}</span>
+        <button
+          type="button"
+          className="schedule-button"
+          onClick={onSchedule}
+          title="Choose a time"
+          aria-label={"Schedule " + task.title}
+        >
+          <Plus size={14} />
+        </button>
+      </div>
     </article>
   );
 }
+
 const blockTop = (start: number) => (start / 60) * 64 + 2;
 const blockHeight = (duration: number) =>
   Math.max(27, (duration / 60) * 64 - 2);
@@ -180,6 +247,7 @@ function layout(blocks: Block[], overlapView: "stacked" | "sideBySide") {
   flush();
   return result;
 }
+
 export function Planner({
   state,
   date,
@@ -205,6 +273,12 @@ export function Planner({
   requestExtras,
   addExtraToToday,
   setOverlapView,
+  experience = "broadsheet",
+  onSearch,
+  onLoadDemo,
+  isDemo = false,
+  onNavigateView,
+  onNotify,
 }: {
   state: State;
   date: string;
@@ -261,11 +335,22 @@ export function Planner({
     createdAt: string;
   } | null;
   setOverlapView: (view: "stacked" | "sideBySide") => void;
+  experience?: ExperienceId;
+  onSearch?: () => void;
+  onLoadDemo?: () => void;
+  isDemo?: boolean;
+  onNavigateView?: (v: WildNavView) => void;
+  onNotify?: (msg: string) => void;
 }) {
   const [view, setView] = useState<CalendarView>("Week"),
     [bank, setBank] = useState<"recommended" | "unscheduled" | "active">(
       "recommended",
-    );
+    ),
+    [calendarOverride, setCalendarOverride] = useState(false);
+
+  useEffect(() => {
+    setCalendarOverride(false);
+  }, [experience]);
   const zonedNow = zonedParts(
     new Date().toISOString(),
     state.settings.timezone,
@@ -274,7 +359,9 @@ export function Planner({
   const scheduled = scheduledTaskIds(state);
   const overridden = googleOverrides(state);
   const aliases = manualTaskAliases(state.tasks, scheduled);
-  const recommended = recommendations(state, date).filter(({ task }) => !aliases.has(task.id));
+  const recommended = recommendations(state, date).filter(
+    ({ task }) => !aliases.has(task.id),
+  );
   const unscheduled = recommended.filter(({ task }) => !scheduled.has(task.id));
   const allScheduled = recommended.length > 0 && unscheduled.length === 0;
   const returnedIds = new Set(
@@ -320,9 +407,13 @@ export function Planner({
           ),
         ]
       : suggested;
-  const tasks = bankTasks.filter((item, index) =>
-    bankTasks.findIndex((other) => other.task.id === item.task.id) === index,
+  const tasks = bankTasks.filter(
+    (item, index) =>
+      bankTasks.findIndex((other) => other.task.id === item.task.id) === index,
   );
+
+  // If Suggested is empty (e.g. local/demo workspace without AI run) while unscheduled tasks exist,
+  // display a helpful nudge or show how many unscheduled tasks await in Unscheduled.
   const mainTaskIds = new Set(
     aiPriorities?.recommendations.map((item) => item.taskId),
   );
@@ -360,6 +451,7 @@ export function Planner({
         return [];
       return [task];
     }) ?? [];
+
   const yearly = view === "Year" || view === "Year Columns";
   const start = addDays(date, -weekday(date));
   const dates =
@@ -378,11 +470,13 @@ export function Planner({
     days.find((day) => day.date === date)?.blocks ??
     blocksForDay(state, date, calendarEvents)
   ).filter((block) => block.kind === "routine");
+
   const [sessionPreview, setSessionPreview] = useState<SessionTiming | null>(
     null,
   );
   const dragSession = useRef<{ id: string; grabMinutes: number } | null>(null);
   const resize = useRef<ResizeGesture | null>(null);
+
   function saveTiming(timing: SessionTiming) {
     adjustSession(
       timing.id,
@@ -412,9 +506,9 @@ export function Planner({
   function dragRoutine(
     e: React.DragEvent<HTMLElement>,
     id: string,
-    date: string,
+    sourceDate: string,
   ) {
-    e.dataTransfer.setData(routineDrag, JSON.stringify({ id, date }));
+    e.dataTransfer.setData(routineDrag, JSON.stringify({ id, date: sourceDate }));
     e.dataTransfer.effectAllowed = "move";
   }
   function endSessionDrag() {
@@ -423,7 +517,7 @@ export function Planner({
   }
   function sessionAtPointer(
     e: React.DragEvent<HTMLDivElement>,
-    date: string,
+    targetDate: string,
     id: string,
   ) {
     const session = state.sessions.find((entry) => entry.id === id);
@@ -432,13 +526,14 @@ export function Planner({
     const pointerMinutes =
       (e.clientY - e.currentTarget.getBoundingClientRect().top) *
       minutesPerPixel;
-    const start = clamp(
+    const blockStart = clamp(
       snap(pointerMinutes - grabMinutes),
       0,
       1440 - session.duration,
     );
-    return { id, date, start, duration: session.duration };
+    return { id, date: targetDate, start: blockStart, duration: session.duration };
   }
+
   function resizeControl(block: Block, edge: ResizeGesture["edge"]) {
     const session = {
       id: block.id,
@@ -532,14 +627,17 @@ export function Planner({
       />
     );
   }
+
   function showDay(d: string) {
     setDate(d);
     setView("Day");
   }
+
   const scroll = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (scroll.current) scroll.current.scrollTop = 7 * 64;
+    if (scroll.current) scroll.current.scrollTop = 7 * 64 - 20;
   }, [view]);
+
   function move(n: number) {
     if (view === "Day") setDate(addDays(date, n));
     else if (view === "Week") setDate(addDays(date, n * 7));
@@ -551,29 +649,31 @@ export function Planner({
       setDate(dayKey(d));
     }
   }
+
   function dropGoogleEvent(
     e: React.DragEvent<HTMLElement>,
-    date: string,
-    start?: string,
+    targetDate: string,
+    targetStart?: string,
   ) {
     const id = e.dataTransfer.getData(googleEventDrag);
     if (!id || !editableEvents.has(id)) return false;
     e.preventDefault();
     e.stopPropagation();
-    void moveImportedEvent(id, { date, start });
+    void moveImportedEvent(id, { date: targetDate, start: targetStart });
     return true;
   }
+
   function dropAtHour(
     e: React.DragEvent<HTMLElement>,
-    date: string,
-    start: string,
+    targetDate: string,
+    targetStart: string,
   ) {
-    if (dropGoogleEvent(e, date, start)) return true;
+    if (dropGoogleEvent(e, targetDate, targetStart)) return true;
     const taskId = e.dataTransfer.getData(taskDrag);
     if (taskId) {
       e.preventDefault();
       e.stopPropagation();
-      scheduleTask(taskId, date, start);
+      scheduleTask(taskId, targetDate, targetStart);
       return true;
     }
     const routineData = e.dataTransfer.getData(routineDrag);
@@ -586,21 +686,30 @@ export function Planner({
       };
       const routine = state.routines.find((r) => r.id === id);
       if (routine)
-        moveRoutineOccurrence(id, sourceDate, date, start, routine.duration);
+        moveRoutineOccurrence(
+          id,
+          sourceDate,
+          targetDate,
+          targetStart,
+          routine.duration,
+        );
       return true;
     }
     return false;
   }
+
   function acceptGoogleDrop(e: React.DragEvent<HTMLElement>) {
     if (e.dataTransfer.types.includes(googleEventDrag)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     }
   }
+
   function dragGoogleEvent(e: React.DragEvent<HTMLElement>, id: string) {
     e.dataTransfer.setData(googleEventDrag, id);
     e.dataTransfer.effectAllowed = "move";
   }
+
   const routineDatePicker = (
     <input
       type="date"
@@ -611,226 +720,200 @@ export function Planner({
       }}
     />
   );
+
+  const completedRoutines = routines.filter(
+    (block) => block.outcome === "completed",
+  ).length;
+
+  const experienceMeta = getExperience(experience);
+  if (isWildExperience(experience) && !calendarOverride) {
+    const activeDayBlocks =
+      days.find((day) => day.date === date)?.blocks ??
+      blocksForDay(state, date, calendarEvents);
+    const wildQueued =
+      bank === "recommended" && !aiPriorities ? unscheduled : tasks;
+    const wildProps: WildPlannerProps = {
+      experience,
+      state,
+      date,
+      today,
+      nowMinute: zonedNow.minute,
+      setDate,
+      edit,
+      setOutcome,
+      scheduleTask,
+      unscheduleSession,
+      openGoogleEvent,
+      events: calendarEvents,
+      blocks: activeDayBlocks,
+      bank,
+      setBank,
+      queuedTasks: wildQueued,
+      aiPriorities,
+      aiExtras,
+      extraTasks,
+      aiReady,
+      aiNeedsSignIn,
+      aiBusy,
+      prioritiesRefreshing,
+      requestPriorities,
+      requestExtras,
+      addExtraToToday,
+      wildModeLabel: experienceMeta.wildModeLabel || experienceMeta.shortName,
+      onSwitchToCalendarView: (nextView) => {
+        setView(nextView);
+        setCalendarOverride(true);
+      },
+      onSearch,
+      onLoadDemo,
+      isDemo,
+      onNavigateView,
+      onNotify,
+    };
+
+    return (
+      <div className="planner-root planner-wild-root">
+        {experience === "sundial" && <SundialPlanner {...wildProps} />}
+        {experience === "timeline" && <TimelinePlanner {...wildProps} />}
+        {experience === "terminal" && <TerminalPlanner {...wildProps} />}
+        {experience === "retro98" && <Retro98Planner {...wildProps} />}
+        {experience === "mission" && <MissionPlanner {...wildProps} />}
+        {experience === "transit" && <TransitPlanner {...wildProps} />}
+        {experience === "blueprint" && <BlueprintPlanner {...wildProps} />}
+        {experience === "notebook" && <NotebookPlanner {...wildProps} />}
+        {experience === "gallery" && <GalleryPlanner {...wildProps} />}
+        {experience === "constellation" && <ConstellationPlanner {...wildProps} />}
+        {experience === "synth" && <SynthPlanner {...wildProps} />}
+        {experience === "zine" && <ZinePlanner {...wildProps} />}
+        {experience === "arena" && <ArenaPlanner {...wildProps} />}
+      </div>
+    );
+  }
+
   return (
-    <>
+    <div className="planner-root">
+      {!isWildExperience(experience) && (
+        <ExperiencePlannerHeader
+          experience={experience}
+          state={state}
+          date={date}
+          edit={edit}
+          onSearch={onSearch || (() => {})}
+          onLoadDemo={onLoadDemo || (() => {})}
+          isDemo={isDemo}
+        />
+      )}
+
       {view === "Year Columns" && (
         <div className="year-overview-heading">
           <h1>Year at a glance</h1>
-          <p>Select a date to open its day plan.</p>
+          <p>Select any date to open its day plan.</p>
         </div>
       )}
-      <details
-        className="planner-routines"
-        open={view === "Day" || view === "Week"}
-      >
-        <summary>
-          <Repeat2 size={16} aria-hidden="true" />
-          <strong>Routines and dailies</strong>
-          <span>
-            {formatDate(date, {
-              weekday: "short",
-              month: "short",
-              day: "numeric",
-            })}
-          </span>
-          <span className="routine-tally">
-            {routines.filter((block) => block.outcome === "completed").length}{" "}
-            of {routines.length} done
-          </span>
-          <ChevronDown
-            size={16}
-            className="routine-chevron"
-            aria-hidden="true"
-          />
-        </summary>
-        <div className="planner-routine-body">
-          <div className="planner-routine-label">{routineDatePicker}</div>
-          {routines.length ? (
-            <div
-              className="planner-card-row"
-              role="region"
-              aria-label="Routine cards"
-              tabIndex={0}
-            >
-              {routines.map((routine) => (
-                <article
-                  className="planner-item-card routine-strip-card"
-                  key={routine.id}
-                >
-                  <span className="strip-card-date">
-                    {routine.allDay
-                      ? "Any time"
-                      : displayTime(clockTime(routine.start)) +
-                        " · " +
-                        durationLabel(routine.duration)}
-                  </span>
-                  <button
-                    className="plain"
-                    onClick={() =>
-                      edit({ kind: "occurrence", id: routine.sourceId, date })
-                    }
-                  >
-                    <strong>{routine.title}</strong>
-                  </button>
-                  <OutcomeSelect
-                    label={routine.title + " outcome"}
-                    value={routine.outcome}
-                    onChange={(value) =>
-                      setOutcome(
-                        "routine",
-                        routine.sourceId,
-                        date,
-                        value as Outcome,
-                      )
-                    }
-                  />
-                </article>
-              ))}
+
+      <div className="planner-context-strip">
+        <details className="planner-routines planner-drawer">
+          <summary className="planner-drawer-summary">
+            <Repeat2 size={15} aria-hidden="true" />
+            <strong>Routines &amp; dailies</strong>
+            <span className="drawer-meta">
+              {formatDate(date, {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              })}
+            </span>
+            <span className="drawer-tally">
+              {completedRoutines} of {routines.length} done
+            </span>
+            <ChevronDown
+              size={15}
+              className="drawer-chevron"
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="planner-drawer-body">
+            <div className="planner-routine-label">
+              <span>Day</span>
+              {routineDatePicker}
             </div>
-          ) : (
-            <p className="planner-strip-empty">
-              No routines scheduled for this day.
-            </p>
-          )}
-        </div>
-      </details>
-      <DeadlineStrip state={state} today={today} edit={edit} />
-      {view !== "Year Columns" && (
-        <section
-          className="ai-todo-explanation"
-          aria-label="AI to-do explanation"
-        >
-          <div>
-            <p>
-              {aiPriorities?.summary ||
-                (aiNeedsSignIn
-                  ? "Sign in under Settings to get an AI explanation for today’s to-do list."
-                  : aiReady
-                    ? "Refresh the AI to-do list to see how today’s tasks were chosen."
-                    : "Connect Gemini in Settings to refresh the AI to-do list.")}
-            </p>
-            {aiPriorities?.stale && (
-              <span className="form-hint" role="status">
-                Plan changed · Needs refresh
-              </span>
-            )}
-            {aiPriorities && (
-              <p className="form-hint">
-                Last refreshed {new Date(aiPriorities.createdAt).toLocaleString()}
+            {routines.length ? (
+              <div
+                className="planner-card-row"
+                role="region"
+                aria-label="Routine cards"
+                tabIndex={0}
+              >
+                {routines.map((routine) => (
+                  <article
+                    className="planner-item-card routine-strip-card"
+                    key={routine.id}
+                  >
+                    <span className="strip-card-date">
+                      {routine.allDay
+                        ? "Any time"
+                        : displayTime(clockTime(routine.start)) +
+                          " · " +
+                          durationLabel(routine.duration)}
+                    </span>
+                    <button
+                      type="button"
+                      className="plain"
+                      onClick={() =>
+                        edit({ kind: "occurrence", id: routine.sourceId, date })
+                      }
+                    >
+                      <strong>{routine.title}</strong>
+                    </button>
+                    <OutcomeSelect
+                      label={routine.title + " outcome"}
+                      value={routine.outcome}
+                      onChange={(value) =>
+                        setOutcome(
+                          "routine",
+                          routine.sourceId,
+                          date,
+                          value as Outcome,
+                        )
+                      }
+                    />
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="planner-strip-empty">
+                No routines scheduled for this day.
               </p>
             )}
           </div>
-          <button
-            className="button secondary small"
-            disabled={!aiReady || aiBusy}
-            onClick={() => {
-              requestPriorities();
-            }}
-          >
-            {prioritiesRefreshing ? "Refreshing…" : "Refresh AI to-do list"}
-          </button>
-        </section>
-      )}
+        </details>
+
+        <DeadlineStrip state={state} today={today} edit={edit} />
+      </div>
+
       <div
         className={
           view === "Year Columns"
             ? "planner-workspace calendar-only"
-            : "planner-workspace"
+            : experience === "flow"
+              ? "planner-workspace is-flow-3col"
+              : "planner-workspace"
         }
       >
-        {view !== "Year Columns" && (
-          <aside
-            className="priority-strip todo-rail"
-            aria-label="To-do list"
-            onDragOver={(e) => {
-              if (!e.dataTransfer.types.includes(sessionDrag)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              e.currentTarget.classList.add("drag-over");
-            }}
-            onDragLeave={(e) => {
-              if (
-                !e.relatedTarget ||
-                !e.currentTarget.contains(e.relatedTarget as Node)
-              )
-                e.currentTarget.classList.remove("drag-over");
-            }}
-            onDrop={(e) => {
-              e.currentTarget.classList.remove("drag-over");
-              const id = e.dataTransfer.getData(sessionDrag);
-              if (!id) return;
-              e.preventDefault();
-              endSessionDrag();
-              if (unscheduleSession(id)) setBank("recommended");
-            }}
-          >
-            <div className="todo-rail-heading">
-              <h2>To-do</h2>
-              <button
-                className="schedule-button"
-                title="New task"
-                aria-label="New task"
-                onClick={() => edit({ kind: "task" })}
-              >
-                <Plus size={14} />
-              </button>
-            </div>
-            <div
-              className="bank-tabs"
-              role="group"
-              aria-label="Task bank filter"
-            >
-              <button
-                className={bank === "recommended" ? "active" : ""}
-                aria-pressed={bank === "recommended"}
-                onClick={() => setBank("recommended")}
-              >
-                Suggested
-              </button>
-              <button
-                className={bank === "unscheduled" ? "active" : ""}
-                aria-pressed={bank === "unscheduled"}
-                onClick={() => setBank("unscheduled")}
-              >
-                Unscheduled
-              </button>
-              <button
-                className={bank === "active" ? "active" : ""}
-                aria-pressed={bank === "active"}
-                onClick={() => setBank("active")}
-              >
-                All active
-              </button>
-            </div>
-            {tasks.length ? (
-              <div className="todo-list">
-                {tasks.map(({ task, reason }) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    reason={reason}
-                    onEdit={() => edit({ kind: "task", id: task.id })}
-                    onSchedule={() =>
-                      edit({ kind: "session", taskId: task.id, date })
-                    }
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="todo-empty">
-                {bank !== "active" && allScheduled
-                  ? "All active tasks are scheduled."
-                  : aiPriorities && bank === "recommended"
-                    ? "No saved suggestions to schedule."
-                    : "No tasks here yet."}
-              </p>
-            )}
-          </aside>
-        )}
         <section className="calendar-panel">
+          {experience === "retro98" && (
+            <div className="retro98-titlebar">
+              <span>Calendar.exe — {view}</span>
+              <div className="retro98-win-btns" aria-hidden="true">
+                <span>_</span>
+                <span>□</span>
+                <span>×</span>
+              </div>
+            </div>
+          )}
           <div className="calendar-toolbar">
             <div className="calendar-title">
-              <CalendarDays size={19} />
+              <CalendarDays size={18} aria-hidden="true" />
               <h2>
                 {yearly
                   ? date.slice(0, 4)
@@ -838,13 +921,14 @@ export function Planner({
               </h2>
               <div className="nav-arrows">
                 <IconButton label="Previous period" onClick={() => move(-1)}>
-                  <ChevronLeft size={17} />
+                  <ChevronLeft size={16} />
                 </IconButton>
                 <IconButton label="Next period" onClick={() => move(1)}>
-                  <ChevronRight size={17} />
+                  <ChevronRight size={16} />
                 </IconButton>
               </div>
               <button
+                type="button"
                 className="button small secondary"
                 onClick={() => setDate(today)}
               >
@@ -854,10 +938,12 @@ export function Planner({
             <div className="calendar-toolbar-controls">
               <div
                 className="overlap-switch"
+                role="group"
                 aria-label="Overlapping block layout"
               >
                 <span>Overlap</span>
                 <button
+                  type="button"
                   className={
                     state.settings.blockOverlapView === "stacked"
                       ? "active"
@@ -869,6 +955,7 @@ export function Planner({
                   Stacked
                 </button>
                 <button
+                  type="button"
                   className={
                     state.settings.blockOverlapView === "sideBySide"
                       ? "active"
@@ -882,9 +969,23 @@ export function Planner({
                   Side by side
                 </button>
               </div>
-              <div className="view-switch" aria-label="Calendar view">
+              <div
+                className="view-switch"
+                role="group"
+                aria-label="Calendar view"
+              >
+                {isWildExperience(experience) && (
+                  <button
+                    type="button"
+                    onClick={() => setCalendarOverride(false)}
+                    className="wild-return-chip"
+                  >
+                    ← {experienceMeta.wildModeLabel || experienceMeta.shortName}
+                  </button>
+                )}
                 {calendarViews.map((v) => (
                   <button
+                    type="button"
                     key={v}
                     onClick={() => setView(v)}
                     className={view === v ? "active" : ""}
@@ -906,7 +1007,7 @@ export function Planner({
                 <div
                   className="week-heading"
                   style={{
-                    gridTemplateColumns: `58px repeat(${dates.length}, minmax(0, 1fr))`,
+                    gridTemplateColumns: `60px repeat(${dates.length}, minmax(0, 1fr))`,
                   }}
                 >
                   <div className="timezone-tag">
@@ -921,6 +1022,7 @@ export function Planner({
                   </div>
                   {dates.map((d) => (
                     <button
+                      type="button"
                       key={d}
                       className={
                         "day-heading " + (d === today ? "is-today" : "")
@@ -933,18 +1035,17 @@ export function Planner({
                         {formatDate(d, { weekday: "short" }).toUpperCase()}
                       </span>
                       <strong>{new Date(d + "T12:00:00").getDate()}</strong>
-                      {d === today && <i />}
                     </button>
                   ))}
                 </div>
                 <div
                   className="deadline-row"
                   style={{
-                    gridTemplateColumns: `58px repeat(${dates.length}, minmax(0, 1fr))`,
+                    gridTemplateColumns: `60px repeat(${dates.length}, minmax(0, 1fr))`,
                   }}
                 >
-                  <span className="deadline-label">
-                    <Flag size={12} />
+                  <span className="deadline-label" title="Deadlines and all-day items">
+                    <Flag size={13} />
                   </span>
                   {days.map(({ date: d, blocks }) => (
                     <div
@@ -983,16 +1084,19 @@ export function Planner({
                         )
                         .map((x) => (
                           <button
+                            type="button"
                             className={`deadline-chip ${x.status === "resolved" ? "deadline-completed" : ""}`}
                             key={x.id}
+                            title={x.title}
                             onClick={() => edit({ kind: "deadline", id: x.id })}
                           >
-                            <span />
-                            {x.status === "resolved" ? "✓ " : ""}
-                            {x.historicalKind === "milestone"
-                              ? "Milestone"
-                              : "Due"}{" "}
-                            · {x.title}
+                            <span className="deadline-chip-text">
+                              {x.status === "resolved" ? "✓ " : "⚑ "}
+                              {x.historicalKind === "milestone"
+                                ? "Milestone"
+                                : "Due"}{" "}
+                              · {x.title}
+                            </span>
                           </button>
                         ))}
                       {state.projects.flatMap((p) =>
@@ -1005,8 +1109,10 @@ export function Planner({
                           )
                           .map((m) => (
                             <button
-                              className={`deadline-chip lavender-text ${m.completed ? "deadline-completed" : ""}`}
+                              type="button"
+                              className={`deadline-chip lavender-chip ${m.completed ? "deadline-completed" : ""}`}
                               key={m.id}
+                              title={m.title}
                               onClick={() =>
                                 edit({
                                   kind: "milestone",
@@ -1015,8 +1121,10 @@ export function Planner({
                                 })
                               }
                             >
-                              {m.completed ? "✓ " : "◇ "}
-                              {m.title}
+                              <span className="deadline-chip-text">
+                                {m.completed ? "✓ " : "◇ "}
+                                {m.title}
+                              </span>
                             </button>
                           )),
                       )}
@@ -1028,18 +1136,23 @@ export function Planner({
                         )
                         .map((p) => (
                           <button
-                            className={`deadline-chip lavender-text ${p.status === "completed" ? "deadline-completed" : ""}`}
+                            type="button"
+                            className={`deadline-chip lavender-chip ${p.status === "completed" ? "deadline-completed" : ""}`}
                             key={p.id}
+                            title={p.title}
                             onClick={() => edit({ kind: "project", id: p.id })}
                           >
-                            {p.status === "completed" ? "✓ " : ""}Due ·{" "}
-                            {p.title}
+                            <span className="deadline-chip-text">
+                              {p.status === "completed" ? "✓ " : "◇ "}Due ·{" "}
+                              {p.title}
+                            </span>
                           </button>
                         ))}
                       {blocks
                         .filter((b) => b.allDay && b.kind === "external")
                         .map((b) => (
                           <button
+                            type="button"
                             className={`deadline-chip all-day-chip ${b.color}`}
                             key={b.id}
                             title={b.title}
@@ -1047,7 +1160,9 @@ export function Planner({
                             onDragStart={(e) => dragGoogleEvent(e, b.sourceId)}
                             onClick={() => openGoogleEvent(b.sourceId)}
                           >
-                            {b.title}
+                            <span className="deadline-chip-text">
+                              {b.title}
+                            </span>
                           </button>
                         ))}
                       {blocks.some((b) => b.allDay && b.kind === "routine") && (
@@ -1078,6 +1193,7 @@ export function Planner({
                                   <span />
                                 </label>
                                 <button
+                                  type="button"
                                   className="routine-deadline-title"
                                   draggable
                                   onDragStart={(e) =>
@@ -1104,7 +1220,7 @@ export function Planner({
                   <div
                     className="time-grid"
                     style={{
-                      gridTemplateColumns: `58px repeat(${dates.length}, minmax(0, 1fr))`,
+                      gridTemplateColumns: `60px repeat(${dates.length}, minmax(0, 1fr))`,
                     }}
                   >
                     <div className="time-labels">
@@ -1169,14 +1285,14 @@ export function Planner({
                             (e.clientY -
                               e.currentTarget.getBoundingClientRect().top) *
                             minutesPerPixel;
-                          const start = clockTime(
+                          const startTime = clockTime(
                             clamp(snap(pointerMinutes), 0, 1440 - calendarStep),
                           );
-                          if (dropGoogleEvent(e, d, start)) return;
+                          if (dropGoogleEvent(e, d, startTime)) return;
                           const taskId = e.dataTransfer.getData(taskDrag);
                           if (taskId) {
                             e.preventDefault();
-                            scheduleTask(taskId, d, start);
+                            scheduleTask(taskId, d, startTime);
                             return;
                           }
                           const routineData =
@@ -1197,7 +1313,7 @@ export function Planner({
                                 id,
                                 sourceDate,
                                 d,
-                                start,
+                                startTime,
                                 routine.duration,
                               );
                             return;
@@ -1238,6 +1354,7 @@ export function Planner({
                               }}
                             >
                               <button
+                                type="button"
                                 aria-label={`Schedule on ${d} at ${clockTime(h * 60)}`}
                                 onClick={() =>
                                   edit({
@@ -1256,7 +1373,7 @@ export function Planner({
                         ).map(({ block: b, lane, lanes, overlapped }) => (
                           <div
                             key={b.id}
-                            className={`calendar-block ${b.color} ${overlapped ? "overlapping-block" : ""} ${overlapped && state.settings.blockOverlapView === "stacked" ? "stacked-overlap" : ""} ${b.kind === "session" ? "session-block" : ""} ${sessionPreview?.id === b.id ? "session-adjusting" : ""} ${b.outcome === "completed" ? "done" : ""} ${b.outcome === "skipped" ? "skipped" : ""} ${b.duration < 35 ? "short-block" : ""}`}
+                            className={`calendar-block ${b.color} ${overlapped ? "overlapping-block" : ""} ${overlapped && state.settings.blockOverlapView === "stacked" ? "stacked-overlap" : ""} ${b.kind === "session" ? "session-block" : ""} ${sessionPreview?.id === b.id ? "session-adjusting" : ""} ${b.outcome === "completed" ? "done" : ""} ${b.outcome === "skipped" ? "skipped" : ""} ${b.duration < 35 ? "short-block" : b.duration <= 55 ? "compact-block" : ""}`}
                             style={{
                               top: blockTop(b.start),
                               height: blockHeight(b.duration),
@@ -1281,6 +1398,7 @@ export function Planner({
                             }
                           >
                             <button
+                              type="button"
                               className="block-content"
                               title={`${b.title} · ${displayTime(clockTime(b.start))} · ${durationLabel(b.duration)}`}
                               aria-label={`${b.title} · ${displayTime(clockTime(b.start))} · ${durationLabel(b.duration)}`}
@@ -1299,11 +1417,15 @@ export function Planner({
                               }
                             >
                               <span className="block-title">
-                                {b.kind === "routine" && <Repeat2 size={11} />}{" "}
+                                {b.kind === "routine" && (
+                                  <Repeat2 size={11} aria-hidden="true" />
+                                )}
                                 {b.outcome === "completed" && (
-                                  <Check size={11} />
-                                )}{" "}
-                                {b.title}
+                                  <Check size={11} aria-hidden="true" />
+                                )}
+                                <span className="block-title-text">
+                                  {b.title}
+                                </span>
                               </span>
                               <span className="block-time">
                                 {displayTime(clockTime(b.start))} –{" "}
@@ -1318,6 +1440,7 @@ export function Planner({
                             {b.kind !== "external" && (
                               <div className="block-controls">
                                 <button
+                                  type="button"
                                   aria-label={`Mark ${b.title} ${b.outcome === "completed" ? "not recorded" : "completed"}`}
                                   title="Toggle session completion"
                                   onClick={() =>
@@ -1427,86 +1550,273 @@ export function Planner({
             </div>
           )}
           <div className="calendar-footer">
-            <div>
-              <span className="legend-dot sage" />
-              Tasks
-              <span className="legend-dot lavender" />
-              Projects
-              <span className="legend-dot peach" />
-              Routines
-              <span className="legend-dot blue" />
-              Google Calendar
+            <div className="calendar-legend">
+              <span>
+                <i className="legend-swatch sage" />
+                Tasks
+              </span>
+              <span>
+                <i className="legend-swatch lavender" />
+                Projects
+              </span>
+              <span>
+                <i className="legend-swatch peach" />
+                Routines
+              </span>
+              <span>
+                <i className="legend-swatch blue" />
+                Google Calendar
+              </span>
               {state.events.some((event) => event.holiday) && (
+                <span>
+                  <i className="legend-swatch holiday" />
+                  Holidays
+                </span>
+              )}
+            </div>
+            <span>Drag tasks onto the grid, or drag blocks to move &amp; resize.</span>
+          </div>
+        </section>
+
+        {view !== "Year Columns" && (
+          <div className="planner-side-rail">
+            <aside
+              className="priority-strip todo-rail"
+              aria-label="To-do list"
+              onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes(sessionDrag)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                e.currentTarget.classList.add("drag-over");
+              }}
+              onDragLeave={(e) => {
+                if (
+                  !e.relatedTarget ||
+                  !e.currentTarget.contains(e.relatedTarget as Node)
+                )
+                  e.currentTarget.classList.remove("drag-over");
+              }}
+              onDrop={(e) => {
+                e.currentTarget.classList.remove("drag-over");
+                const id = e.dataTransfer.getData(sessionDrag);
+                if (!id) return;
+                e.preventDefault();
+                endSessionDrag();
+                if (unscheduleSession(id)) setBank("recommended");
+              }}
+            >
+              <div className="todo-rail-heading">
+                <div>
+                  <h2>To-do</h2>
+                  <p className="todo-rail-sub">
+                    Drag to calendar or drop sessions here to unschedule
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="schedule-button"
+                  title="New task"
+                  aria-label="New task"
+                  onClick={() => edit({ kind: "task" })}
+                >
+                  <Plus size={15} />
+                </button>
+              </div>
+
+              <div
+                className="bank-tabs"
+                role="group"
+                aria-label="Task bank filter"
+              >
+                <button
+                  type="button"
+                  className={bank === "recommended" ? "active" : ""}
+                  aria-pressed={bank === "recommended"}
+                  onClick={() => setBank("recommended")}
+                >
+                  Suggested
+                </button>
+                <button
+                  type="button"
+                  className={bank === "unscheduled" ? "active" : ""}
+                  aria-pressed={bank === "unscheduled"}
+                  onClick={() => setBank("unscheduled")}
+                >
+                  Unscheduled
+                  {unscheduled.length > 0 && ` (${unscheduled.length})`}
+                </button>
+                <button
+                  type="button"
+                  className={bank === "active" ? "active" : ""}
+                  aria-pressed={bank === "active"}
+                  onClick={() => setBank("active")}
+                >
+                  All active
+                </button>
+              </div>
+
+              <section
+                className="ai-todo-explanation"
+                aria-label="AI to-do explanation"
+              >
+                <div className="ai-todo-summary-row">
+                  <Sparkles size={14} aria-hidden="true" />
+                  <p>
+                    {aiPriorities?.summary ||
+                      (aiNeedsSignIn
+                        ? "Sign in under Settings to get AI task recommendations."
+                        : aiReady
+                          ? "Refresh to see which tasks fit today’s remaining time."
+                          : "Connect Gemini in Settings for AI suggestions.")}
+                  </p>
+                </div>
+                <div className="ai-todo-meta-row">
+                  <span>
+                    {aiPriorities?.stale
+                      ? "Plan changed · Needs refresh"
+                      : aiPriorities
+                        ? `Updated ${new Date(aiPriorities.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                        : unscheduled.length > 0 && bank === "recommended"
+                          ? `${unscheduled.length} unscheduled ready`
+                          : "Human-owned schedule"}
+                  </span>
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    disabled={!aiReady || aiBusy}
+                    onClick={() => requestPriorities()}
+                  >
+                    <RefreshCw
+                      size={12}
+                      className={prioritiesRefreshing ? "spin" : ""}
+                    />
+                    {prioritiesRefreshing ? "Refreshing…" : "Refresh AI to-do list"}
+                  </button>
+                </div>
+              </section>
+
+              {tasks.length ? (
+                <div className="todo-list">
+                  {tasks.map(({ task, reason }) => (
+                    <TaskCard
+                      key={task.id}
+                      task={task}
+                      projectName={
+                        state.projects.find((p) => p.id === task.projectId)
+                          ?.title
+                      }
+                      dueDate={taskDue(state, task)}
+                      reason={reason}
+                      showReason={bank === "recommended"}
+                      onEdit={() => edit({ kind: "task", id: task.id })}
+                      onSchedule={() =>
+                        edit({ kind: "session", taskId: task.id, date })
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="todo-empty">
+                  <p>
+                    {bank !== "active" && allScheduled
+                      ? "All active tasks are scheduled."
+                      : aiPriorities && bank === "recommended"
+                        ? "No saved suggestions remaining to schedule."
+                        : bank === "recommended" && unscheduled.length > 0
+                          ? "No AI suggestions yet. Switch to Unscheduled to schedule manually."
+                          : "No tasks here yet."}
+                  </p>
+                  {bank === "recommended" && unscheduled.length > 0 && (
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setBank("unscheduled")}
+                    >
+                      View {unscheduled.length} unscheduled →
+                    </button>
+                  )}
+                </div>
+              )}
+            </aside>
+
+            <section
+              className="extra-recommendations-bank"
+              aria-labelledby="extra-bank-title"
+            >
+              <div className="extra-bank-heading">
+                <div>
+                  <h2 id="extra-bank-title">Extra-time bank</h2>
+                  <p>
+                    Optional recommendations · Separate from your main to-do
+                    list
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="button secondary small"
+                  disabled={
+                    !aiReady || aiBusy || !aiPriorities || aiPriorities.stale
+                  }
+                  onClick={requestExtras}
+                >
+                  {aiExtras
+                    ? "Refresh extra recommendations"
+                    : "Get extra recommendations"}
+                </button>
+              </div>
+              {!aiPriorities || aiPriorities.stale ? (
+                <p className="form-hint">
+                  Refresh the main to-do list to request extras.
+                </p>
+              ) : null}
+              {aiExtras && (
                 <>
-                  <span className="legend-dot holiday" /> Holidays
+                  <p className="extra-bank-explanation">{aiExtras.summary}</p>
+                  {aiExtras.stale && (
+                    <p className="form-hint" role="status">
+                      Plan changed · Refresh recommendations before adding
+                      tasks.
+                    </p>
+                  )}
+                  <div className="extra-bank-tasks">
+                    {extraTasks.map((task) => (
+                      <article className="extra-bank-task" key={task.id}>
+                        <span>{task.title}</span>
+                        <button
+                          type="button"
+                          className="button secondary small"
+                          disabled={aiBusy || aiExtras.stale}
+                          onClick={() => addExtraToToday(task)}
+                        >
+                          Add to today
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                  {!extraTasks.length && (
+                    <p className="form-hint">
+                      No additional tasks in this bank.
+                    </p>
+                  )}
                 </>
               )}
-            </div>
-            <span>Your time, thoughtfully planned.</span>
+            </section>
           </div>
-        </section>
+        )}
+        {view !== "Year Columns" && experience === "flow" && (
+          <TodayExecutionStream
+            state={state}
+            date={date}
+            edit={edit}
+            setOutcome={setOutcome}
+            openGoogleEvent={openGoogleEvent}
+          />
+        )}
       </div>
-      {view !== "Year Columns" && (
-        <section
-          className="extra-recommendations-bank"
-          aria-labelledby="extra-bank-title"
-        >
-          <div className="extra-bank-heading">
-            <div>
-              <h2 id="extra-bank-title">Extra-time bank</h2>
-              <p>
-                Optional recommendations · Separate from your main to-do list
-              </p>
-            </div>
-            <button
-              className="button secondary small"
-              disabled={
-                !aiReady || aiBusy || !aiPriorities || aiPriorities.stale
-              }
-              onClick={requestExtras}
-            >
-              {aiExtras
-                ? "Refresh extra recommendations"
-                : "Get extra recommendations"}
-            </button>
-          </div>
-          {!aiPriorities || aiPriorities.stale ? (
-            <p className="form-hint">
-              Refresh the main to-do list to request extras.
-            </p>
-          ) : null}
-          {aiExtras && (
-            <>
-              <p className="extra-bank-explanation">{aiExtras.summary}</p>
-              {aiExtras.stale && (
-                <p className="form-hint" role="status">
-                  Plan changed · Refresh recommendations before adding tasks.
-                </p>
-              )}
-              <div className="extra-bank-tasks">
-                {extraTasks.map((task) => (
-                  <article className="extra-bank-task" key={task.id}>
-                    <span>{task.title}</span>
-                    <button
-                      className="button secondary small"
-                      disabled={aiBusy || aiExtras.stale}
-                      onClick={() => addExtraToToday(task)}
-                    >
-                      Add to today
-                    </button>
-                  </article>
-                ))}
-              </div>
-              {!extraTasks.length && (
-                <p className="form-hint">No additional tasks in this bank.</p>
-              )}
-            </>
-          )}
-        </section>
-      )}
-    </>
+    </div>
   );
 }
+
 function markersForDay(state: State, date: string) {
   const overridden = googleOverrides(state);
   return [
@@ -1594,6 +1904,7 @@ function YearColumns({
                 });
                 return (
                   <button
+                    type="button"
                     key={date}
                     onClick={() => select(date)}
                     aria-label={summary ? label + " — " + summary : label}
@@ -1670,6 +1981,7 @@ function Month({
           deadlines = markersForDay(state, d);
         return (
           <button
+            type="button"
             className={
               "month-day " +
               (d.slice(0, 7) !== date.slice(0, 7) ? "outside " : "") +
@@ -1729,6 +2041,7 @@ function Month({
     </div>
   );
 }
+
 export function MiniMonth({
   year,
   month,
@@ -1761,6 +2074,7 @@ export function MiniMonth({
               blocksForDay(state, d, events).length > 0;
           return (
             <button
+              type="button"
               key={d}
               onClick={() => select(d)}
               className={

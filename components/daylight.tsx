@@ -63,6 +63,15 @@ import { Progress } from "./review";
 import { DailyReviewDialog } from "./daily-review-dialog";
 import { Settings, Health, download } from "./settings";
 import { IconButton, Dialog, Badge, Field } from "./ui";
+import {
+  DEFAULT_EXPERIENCE,
+  EXPERIENCE_IDS,
+  EXPERIENCE_STORAGE_KEY,
+  type ExperienceId,
+  getExperience,
+  resolveExperience,
+} from "@/lib/experiences";
+import { ExperienceSwitcher } from "./experience-switcher";
 const GOOGLE_PULL_INTERVAL = 10_000;
 const GOOGLE_PUSH_DELAY = 500;
 type SyncMode = "full" | "push" | "pull";
@@ -97,7 +106,25 @@ const nav = [
   { id: "routines", label: "Routines", icon: Repeat2 },
   { id: "progress", label: "Progress", icon: ChartNoAxesCombined },
 ] as const;
+import OriginalDaylight from "./original/daylight";
 export default function Daylight() {
+  const [selected, setSelected] = useState<ExperienceId | null>(null);
+  useEffect(() => {
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(EXPERIENCE_STORAGE_KEY); } catch {}
+    setSelected(resolveExperience(new URLSearchParams(window.location.search).get("style"), stored));
+  }, []);
+  const select = useCallback((next: ExperienceId) => {
+    document.documentElement.dataset.experience = next;
+    try { localStorage.setItem(EXPERIENCE_STORAGE_KEY, next); } catch {}
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("style")) { url.searchParams.set("style", next); window.history.replaceState(window.history.state, "", url); }
+    setSelected(next);
+  }, []);
+  if (!selected) return null;
+  return selected === "original" ? <OriginalDaylight onChangeExperience={select} /> : <ThemedDaylight onChangeExperience={select} />;
+}
+function ThemedDaylight({ onChangeExperience }: { onChangeExperience: (id: ExperienceId) => void }) {
   const workspace = useWorkspace();
   const { state, ready, update, auth, mode, status, error } = workspace;
   const [view, setView] = useState<View>("planner"),
@@ -120,7 +147,28 @@ export default function Daylight() {
     [conflicts, setConflicts] = useState<
       { title: string; reason: string; url?: string }[] | null
     >(null),
-    [welcomeDismissed, setWelcomeDismissed] = useState(false);
+    [welcomeDismissed, setWelcomeDismissed] = useState(false),
+    [slowLoading, setSlowLoading] = useState(false),
+    [startMenuOpen, setStartMenuOpen] = useState(false),
+    [experience, setExperience] = useState<ExperienceId>(DEFAULT_EXPERIENCE);
+  const experienceMeta = getExperience(experience);
+  const changeExperience = useCallback((next: ExperienceId) => {
+    setExperience(next);
+    onChangeExperience(next);
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("style")) {
+      url.searchParams.set("style", next);
+      window.history.replaceState(window.history.state, "", url);
+    }
+    if (typeof document !== "undefined") {
+      document.documentElement.dataset.experience = next;
+    }
+    try {
+      localStorage.setItem(EXPERIENCE_STORAGE_KEY, next);
+    } catch {
+      // Ignore storage restriction in private browsing.
+    }
+  }, [onChangeExperience]);
   const autoSyncBaseline = useRef<string | null>(null);
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const failedSync = useRef<string | null>(null);
@@ -152,6 +200,14 @@ export default function Daylight() {
   } | null>(null);
   const [reviewDate, setReviewDate] = useState<string>();
   const [, setFreshnessTick] = useState(0);
+  useEffect(() => {
+    if (ready) {
+      setSlowLoading(false);
+      return;
+    }
+    const id = window.setTimeout(() => setSlowLoading(true), 5000);
+    return () => window.clearTimeout(id);
+  }, [ready]);
   const reviewedReminder = useRef("");
   const reminderKey = "daylight:review-reminder:" + mode;
   useEffect(() => {
@@ -226,8 +282,15 @@ export default function Daylight() {
     const tick = () => {
       setFreshnessTick((value) => value + 1);
       const current = latestState.current;
-      const { day, minute } = zonedParts(new Date().toISOString(), current.settings.timezone);
-      if (expireGeneratedTodos(current, day, minute).length === current.tasks.length) return;
+      const { day, minute } = zonedParts(
+        new Date().toISOString(),
+        current.settings.timezone,
+      );
+      if (
+        expireGeneratedTodos(current, day, minute).length ===
+        current.tasks.length
+      )
+        return;
       if (!workspace.canSyncCalendar()) return;
       try {
         update((draft) => {
@@ -283,6 +346,15 @@ export default function Daylight() {
       .then(setHealth)
       .catch(() => {});
     const query = new URLSearchParams(window.location.search);
+    let storedExp: string | null = null;
+    try {
+      storedExp = localStorage.getItem(EXPERIENCE_STORAGE_KEY);
+    } catch {
+      storedExp = null;
+    }
+    const resolvedExp = resolveExperience(query.get("style"), storedExp);
+    setExperience(resolvedExp);
+    document.documentElement.dataset.experience = resolvedExp;
     if (query.has("google")) {
       setView("settings");
       setToast(
@@ -297,10 +369,29 @@ export default function Daylight() {
         e.preventDefault();
         setSearch("");
       }
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        if (e.key === "[" || e.key === "]") {
+          e.preventDefault();
+          const cur =
+            (document.documentElement.dataset.experience as ExperienceId) ||
+            DEFAULT_EXPERIENCE;
+          const curIdx = Math.max(0, EXPERIENCE_IDS.indexOf(cur));
+          const delta = e.key === "]" ? 1 : -1;
+          const nextIdx =
+            (curIdx + delta + EXPERIENCE_IDS.length) % EXPERIENCE_IDS.length;
+          changeExperience(EXPERIENCE_IDS[nextIdx]!);
+          return;
+        }
+        const idx = e.key === "0" ? 9 : Number(e.key) - 1;
+        if (idx >= 0 && idx < EXPERIENCE_IDS.length) {
+          e.preventDefault();
+          changeExperience(EXPERIENCE_IDS[idx]);
+        }
+      }
     };
     window.addEventListener("keydown", keyboard);
     return () => window.removeEventListener("keydown", keyboard);
-  }, []);
+  }, [changeExperience]);
   const change = (fn: (s: State) => void) => {
     try {
       update(fn);
@@ -367,7 +458,8 @@ export default function Daylight() {
         "POST",
         syncMode === "pull" ? 60000 : 180000,
       );
-      if (latestMode.current !== startedMode || !workspace.canSyncCalendar()) return;
+      if (latestMode.current !== startedMode || !workspace.canSyncCalendar())
+        return;
       const current = latestState.current;
       if (
         (actionEpoch.current !== epoch && quiet) ||
@@ -1104,7 +1196,16 @@ export default function Daylight() {
       state.deadlines.length >
     0;
   const aiReady = !!health?.aiConfigured && !!auth && mode !== "demo";
-  const props = { state, update: change, edit, notify };
+  const props = {
+    state,
+    update: change,
+    edit,
+    notify,
+    experience,
+    scheduleTask: scheduleDroppedTask,
+    setOutcome,
+    onNavigatePlanner: () => setView("planner"),
+  };
   if (!ready)
     return (
       <div className="loading-screen">
@@ -1114,10 +1215,27 @@ export default function Daylight() {
         </h1>
         <p>A little space for what matters.</p>
         <Loader2 size={20} className="spin" />
+        {slowLoading && (
+          <div className="loading-recovery">
+            <p className="small-text">
+              Taking longer than usual to open your workspace.
+            </p>
+            <button
+              type="button"
+              className="button secondary small"
+              onClick={() => window.location.reload()}
+            >
+              Reload workspace
+            </button>
+          </div>
+        )}
       </div>
     );
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell layout-${experienceMeta.navLayout} exp-${experience}`}
+      data-experience={experience}
+    >
       <aside className={"sidebar " + (mobile ? "mobile-open" : "")}>
         <a
           className="brand"
@@ -1128,11 +1246,12 @@ export default function Daylight() {
           }}
         >
           <span className="brand-icon">
-            <Sunrise size={27} strokeWidth={1.7} />
+            <Sunrise size={24} strokeWidth={1.8} />
           </span>
           daylight<span className="brand-period">.</span>
         </a>
         <button
+          type="button"
           className="workspace-switch"
           onClick={() => {
             setView("settings");
@@ -1159,49 +1278,52 @@ export default function Daylight() {
           <ChevronDown size={14} />
         </button>
         <div className="nav-label">WORKSPACE</div>
-        <nav>
+        <nav aria-label="Main navigation">
           {nav.map(({ id, label, icon: Icon }) => (
             <button
+              type="button"
               key={id}
               className={"nav-item " + (view === id ? "active" : "")}
+              aria-current={view === id ? "page" : undefined}
               onClick={() => {
                 if (id === "progress") setReviewDate(undefined);
                 setView(id);
                 setMobile(false);
               }}
             >
-              <Icon size={18} strokeWidth={1.7} />
+              <Icon size={17} strokeWidth={1.8} />
               <span>{label}</span>
               {id === "tasks" &&
                 state.tasks.filter((t) => t.status === "active").length > 0 && (
-                  <span className="nav-count">
+                  <span className="nav-count tabular-num">
                     {state.tasks.filter((t) => t.status === "active").length}
                   </span>
                 )}
-              {id === "planner" && <span className="nav-active-dot" />}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <button
+            type="button"
             className={"nav-item " + (view === "settings" ? "active" : "")}
+            aria-current={view === "settings" ? "page" : undefined}
             onClick={() => {
               setView("settings");
               setMobile(false);
             }}
           >
-            <Settings2 size={18} />
-            <span>Settings & connections</span>
+            <Settings2 size={17} strokeWidth={1.8} />
+            <span>Settings &amp; connections</span>
           </button>
           <div className="storage-status" title={status}>
-            {auth ? <Cloud size={13} /> : <HardDrive size={13} />}
+            {auth ? <Cloud size={14} /> : <HardDrive size={14} />}
             <span>{status}</span>
-            <span className={"status-dot " + (error ? "warning" : "")} />
           </div>
         </div>
       </aside>
       {mobile && (
         <button
+          type="button"
           className="mobile-scrim"
           onClick={() => setMobile(false)}
           aria-label="Close navigation"
@@ -1209,7 +1331,7 @@ export default function Daylight() {
       )}
       <div className="main-shell">
         <header className="topbar">
-          <div className="breadcrumb">
+          <div className="topbar-left">
             <IconButton
               label="Toggle navigation"
               className="mobile-menu"
@@ -1217,22 +1339,101 @@ export default function Daylight() {
             >
               <Menu size={19} />
             </IconButton>
-            <span>My workspace</span>
-            <span className="breadcrumb-slash">/</span>
-            <strong>
-              {view === "settings"
-                ? "Settings"
-                : nav.find((n) => n.id === view)?.label}
-            </strong>
+            {experienceMeta.navLayout === "top" ? (
+              <a
+                className="topbar-brand"
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setView("planner");
+                }}
+              >
+                <Sunrise size={19} strokeWidth={1.9} aria-hidden="true" />
+                <span>
+                  {experience === "terminal" ? "SYS://DAYLIGHT" : "daylight."}
+                </span>
+              </a>
+            ) : (
+              <div className="breadcrumb">
+                <span>
+                  {mode === "demo"
+                    ? "Sample workspace"
+                    : state.settings.name
+                      ? state.settings.name + "’s space"
+                      : "My workspace"}
+                </span>
+                <span className="breadcrumb-slash">/</span>
+                <strong>
+                  {view === "settings"
+                    ? "Settings"
+                    : nav.find((n) => n.id === view)?.label}
+                </strong>
+              </div>
+            )}
           </div>
+          {experienceMeta.navLayout === "top" && (
+            <nav className="top-nav" aria-label="Workspace views">
+              {nav.map(({ id, label }, idx) => (
+                <button
+                  type="button"
+                  key={id}
+                  className={"top-nav-link " + (view === id ? "active" : "")}
+                  aria-current={view === id ? "page" : undefined}
+                  onClick={() => {
+                    if (id === "progress") setReviewDate(undefined);
+                    setView(id);
+                    setMobile(false);
+                  }}
+                >
+                  {experience === "bauhaus" && (
+                    <span className="top-nav-index tabular-num">
+                      0{idx + 1}
+                    </span>
+                  )}
+                  {experience === "terminal" && (
+                    <span className="top-nav-index tabular-num">
+                      F{idx + 1}:
+                    </span>
+                  )}
+                  <span>
+                    {experience === "terminal" ? label.toUpperCase() : label}
+                  </span>
+                </button>
+              ))}
+              <button
+                type="button"
+                className={
+                  "top-nav-link " + (view === "settings" ? "active" : "")
+                }
+                aria-current={view === "settings" ? "page" : undefined}
+                onClick={() => {
+                  setView("settings");
+                  setMobile(false);
+                }}
+              >
+                {experience === "bauhaus" && (
+                  <span className="top-nav-index tabular-num">07</span>
+                )}
+                {experience === "terminal" && (
+                  <span className="top-nav-index tabular-num">F7:</span>
+                )}
+                <span>{experience === "terminal" ? "CFG" : "Settings"}</span>
+              </button>
+            </nav>
+          )}
           <div className="top-actions">
+            <ExperienceSwitcher
+              value={experience}
+              onChange={changeExperience}
+            />
             <button
+              type="button"
               className="global-search"
               onClick={() => setSearch("")}
               aria-label="Search workspace"
             >
               <Search size={15} />
-              <span>Search anything</span>
+              <span>Search</span>
               <kbd>⌘ K</kbd>
             </button>
             <span className="topbar-divider" />
@@ -1245,17 +1446,19 @@ export default function Daylight() {
             </IconButton>
             <div className="quick-add">
               <button
+                type="button"
                 className="button primary"
                 onClick={() => setQuick(!quick)}
                 aria-expanded={quick}
               >
-                <Plus size={16} />
+                <Plus size={15} />
                 <span>Quick add</span>
                 <ChevronDown size={13} />
               </button>
               {quick && (
                 <>
                   <button
+                    type="button"
                     className="dropdown-dismiss"
                     aria-label="Dismiss quick add"
                     onClick={() => setQuick(false)}
@@ -1268,6 +1471,7 @@ export default function Daylight() {
                       ["routine", "Routine"],
                     ].map(([kind, label]) => (
                       <button
+                        type="button"
                         key={kind}
                         onClick={() =>
                           edit({ kind: kind as EditorState["kind"] })
@@ -1283,15 +1487,18 @@ export default function Daylight() {
             </div>
           </div>
         </header>
-        <main>
+        {/* The imported layouts use different hook trees; remount views when the style changes. */}
+        <main key={experience}>
           {mode === "demo" && (
             <div className="demo-banner">
-              <span>
+              <span className="demo-banner-copy">
                 <Sparkles size={15} />
-                <strong>Sample workspace</strong> · Explore freely. These are
-                example records.
+                <span>
+                  <strong>Sample workspace</strong> · Explore freely. These are
+                  example records.
+                </span>
               </span>
-              <button onClick={() => workspace.leaveDemo()}>
+              <button type="button" onClick={() => workspace.leaveDemo()}>
                 Return to my workspace
                 <ArrowRight size={14} />
               </button>
@@ -1324,18 +1531,20 @@ export default function Daylight() {
                 <button onClick={() => void workspace.retryCloud()}>
                   Retry cloud connection
                 </button>
-              ) : <button
-                onClick={() => {
-                  if (
-                    confirm(
-                      "Load the latest stored copy? Export a backup first if you need to keep these edits.",
+              ) : (
+                <button
+                  onClick={() => {
+                    if (
+                      confirm(
+                        "Load the latest stored copy? Export a backup first if you need to keep these edits.",
+                      )
                     )
-                  )
-                    void workspace.reloadCloud();
-                }}
-              >
-                Reload stored copy
-              </button>}
+                      void workspace.reloadCloud();
+                  }}
+                >
+                  Reload stored copy
+                </button>
+              )}
             </div>
           )}
           {!hasData && mode !== "demo" && !welcomeDismissed && (
@@ -1397,6 +1606,15 @@ export default function Daylight() {
                   s.settings.blockOverlapView = layout;
                 })
               }
+              experience={experience}
+              onSearch={() => setSearch("")}
+              onLoadDemo={() => workspace.loadDemo()}
+              isDemo={mode === "demo"}
+              onNavigateView={(nextView) => {
+                if (nextView === "progress") setReviewDate(undefined);
+                setView(nextView);
+              }}
+              onNotify={notify}
             />
           )}{" "}
           {view === "tasks" && <Tasks {...props} />}{" "}
@@ -1432,6 +1650,8 @@ export default function Daylight() {
               sync={sync}
               busy={busy}
               notify={notify}
+              experience={experience}
+              onChangeExperience={changeExperience}
             />
           )}
           <footer className="main-footer">
@@ -1441,6 +1661,154 @@ export default function Daylight() {
           </footer>
         </main>
       </div>
+      {experienceMeta.shellMode === "taskbar" && (
+        <div
+          className="retro98-taskbar"
+          role="navigation"
+          aria-label="Daylight 98 Taskbar"
+        >
+          <div className="retro98-start-wrap">
+            <button
+              type="button"
+              className={"retro98-start-btn " + (startMenuOpen ? "active" : "")}
+              aria-expanded={startMenuOpen}
+              onClick={() => setStartMenuOpen((v) => !v)}
+            >
+              <Sunrise size={14} aria-hidden="true" />
+              <strong>Start</strong>
+            </button>
+            {startMenuOpen && (
+              <>
+                <button
+                  type="button"
+                  className="dropdown-dismiss"
+                  aria-label="Close Start menu"
+                  onClick={() => setStartMenuOpen(false)}
+                />
+                <div className="retro98-start-menu" role="menu">
+                  <div className="retro98-start-banner">
+                    <span>DAYLIGHT 98</span>
+                  </div>
+                  <div className="retro98-start-items">
+                    {nav.map(({ id, label, icon: Icon }) => (
+                      <button
+                        type="button"
+                        key={id}
+                        role="menuitem"
+                        className={view === id ? "active" : ""}
+                        onClick={() => {
+                          if (id === "progress") setReviewDate(undefined);
+                          setView(id);
+                          setStartMenuOpen(false);
+                        }}
+                      >
+                        <Icon size={14} />
+                        <span>{label}</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={view === "settings" ? "active" : ""}
+                      onClick={() => {
+                        setView("settings");
+                        setStartMenuOpen(false);
+                      }}
+                    >
+                      <Settings2 size={14} />
+                      <span>Settings &amp; Styles</span>
+                    </button>
+                    <hr />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setStartMenuOpen(false);
+                        edit({ kind: "task" });
+                      }}
+                    >
+                      <Plus size={14} />
+                      <span>New Task...</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setStartMenuOpen(false);
+                        setSearch("");
+                      }}
+                    >
+                      <Search size={14} />
+                      <span>Find / Search (⌘K)</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="retro98-taskbar-tabs">
+            {nav.map(({ id, label }) => (
+              <button
+                type="button"
+                key={id}
+                className={"retro98-task-tab " + (view === id ? "active" : "")}
+                onClick={() => {
+                  if (id === "progress") setReviewDate(undefined);
+                  setView(id);
+                  setStartMenuOpen(false);
+                }}
+              >
+                {label}.exe
+              </button>
+            ))}
+            <button
+              type="button"
+              className={
+                "retro98-task-tab " + (view === "settings" ? "active" : "")
+              }
+              onClick={() => {
+                setView("settings");
+                setStartMenuOpen(false);
+              }}
+            >
+              Settings.cpl
+            </button>
+          </div>
+
+          <div className="retro98-tray">
+            <ExperienceSwitcher
+              value={experience}
+              onChange={changeExperience}
+              placement="up"
+            />
+            <button
+              type="button"
+              className="retro98-tray-btn"
+              onClick={() => edit({ kind: "task" })}
+              title="Quick add task"
+              aria-label="Quick add task"
+            >
+              <Plus size={13} />
+            </button>
+            <button
+              type="button"
+              className="retro98-tray-btn"
+              onClick={() => setSearch("")}
+              title="Search workspace"
+              aria-label="Search workspace"
+            >
+              <Search size={13} />
+            </button>
+            <span className="retro98-clock tabular-num">
+              {new Date().toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </span>
+          </div>
+        </div>
+      )}
       {modal && (
         <Editor
           key={JSON.stringify(modal)}
@@ -1524,6 +1892,8 @@ export default function Daylight() {
                 .slice(0, 12)
                 .map((x) => (
                   <button
+                    type="button"
+                    className="search-result"
                     key={x.kind + x.id}
                     onClick={() => {
                       setSearch(null);
